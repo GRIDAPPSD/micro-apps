@@ -1,59 +1,33 @@
-import logging
-import gridappsd.field_interface.agents.agents as agents_mod
-from cimgraph.data_profile import CIM_PROFILE
-cim_profile = CIM_PROFILE.RC4_2021.value
-agents_mod.set_cim_profile(cim_profile)
-cim = agents_mod.cim
-
-log = logging.getLogger(__name__)
+from enum import Enum
+from cimgraph import utils
+from cimgraph.databases import ConnectionParameters, BlazegraphConnection
+from cimgraph.models import FeederModel
+import importlib
 
 
-def init_cim(network_area) -> None:
-    network_area.get_all_attributes(cim.ACLineSegment)
-    network_area.get_all_attributes(cim.ACLineSegmentPhase)
-    network_area.get_all_attributes(cim.BaseVoltage)
-    network_area.get_all_attributes(cim.SvEstVoltage)
-    network_area.get_all_attributes(cim.SvVoltage)
-    network_area.get_all_attributes(cim.Equipment)
-    network_area.get_all_attributes(cim.PerLengthPhaseImpedance)
-    network_area.get_all_attributes(cim.PhaseImpedanceData)
-    network_area.get_all_attributes(cim.WireSpacingInfo)
-    network_area.get_all_attributes(cim.WirePosition)
-    network_area.get_all_attributes(cim.OverheadWireInfo)
-    network_area.get_all_attributes(cim.ConcentricNeutralCableInfo)
-    network_area.get_all_attributes(cim.TapeShieldCableInfo)
-    network_area.get_all_attributes(cim.TransformerTank)
-    network_area.get_all_attributes(cim.TransformerTankEnd)
-    network_area.get_all_attributes(cim.TransformerTankInfo)
-    network_area.get_all_attributes(cim.TransformerEndInfo)
-    network_area.get_all_attributes(cim.ShortCircuitTest)
-    network_area.get_all_attributes(cim.NoLoadTest)
-    network_area.get_all_attributes(cim.PowerElectronicsConnection)
-    network_area.get_all_attributes(cim.PowerElectronicsConnectionPhase)
-    network_area.get_all_attributes(cim.EnergyConsumer)
-    network_area.get_all_attributes(cim.EnergyConsumerPhase)
-    network_area.get_all_attributes(cim.Analog)
-    network_area.get_all_attributes(cim.EnergyConsumerPhase)
-    network_area.get_all_attributes(cim.Terminal)
-
-
-def query_line_info(network_area):
-    if cim.ACLineSegment not in network_area.typed_catalog:
-        return None
-
-    line_ids = list(network_area.typed_catalog[cim.ACLineSegment].keys())
-
-    for line_id in line_ids:
-        line = network_area.typed_catalog[cim.ACLineSegment][line_id]
-        print(line)
-
-        from_bus = line.Terminals[0].ConnectivityNode.name
-        print(from_bus)
-
-        to_bus = line.Terminals[1].ConnectivityNode.name
-        print(to_bus)
+class LineName(Enum):
+    IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
+    IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
+    IEEE123PV = "_A3BC35AA-01F6-478E-A7B1-8EA4598A685C"
 
 
 if __name__ == "__main__":
+    cim_profile = 'rc4_2021'
+    cim = importlib.import_module('cimgraph.data_profile.' + cim_profile)
 
-    print("Hello from pfc")
+    feeder = cim.Feeder(mRID=LineName.IEEE13.value)
+    params = ConnectionParameters(
+        url="http://localhost:8889/bigdata/namespace/kb/sparql",
+        cim_profile=cim_profile)
+    try:
+        bg = BlazegraphConnection(params)
+        print(bg)
+        network = FeederModel(
+            connection=bg,
+            container=feeder,
+            distributed=False)
+        utils.get_all_data(network)
+        network.get_all_edges(cim.ACLineSegment)
+        network.pprint(cim.ACLineSegment, show_empty=False, json_ld=False)
+    except Exception as e:
+        raise e

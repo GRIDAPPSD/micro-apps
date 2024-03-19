@@ -7,9 +7,13 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-gridappsd-python = {version = "^2024", allow-prereleases = true}
-cim-graph = {version = "^0.1", allow-prereleases = true}
-opendssdirect-py = "^0.9"
+gridappsd-python = "^2023.12.1"
+cim-graph = "^0.1.2a0"
+pandas = "*"
+networkx = "*"
+matplotlib = "*"
+scipy = "*"
+cvxpy = "*"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.6.0"

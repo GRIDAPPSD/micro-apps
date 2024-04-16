@@ -12,8 +12,8 @@ cim-graph = "^0.1.2a0"
 pandas = "*"
 networkx = "*"
 matplotlib = "*"
-scipy = "*"
 cvxpy = "*"
+pydantic = "*"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.6.0"

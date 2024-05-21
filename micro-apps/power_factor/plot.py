@@ -1,5 +1,27 @@
 import networkx as nx
+import numpy as np
 import matplotlib.pyplot as plt
+from pandas import DataFrame
+
+
+def plot(setpoints: np.ndarray, profiles: DataFrame) -> None:
+
+    solar = profiles["Solar"]
+    load = profiles["Loadshape"]
+    time = profiles["Time"]
+
+    fig, ax = plt.subplots()
+
+    ax.plot(time, solar, label='Solar')
+    ax.plot(time, load, label='Load')
+    print(np.shape(setpoints))
+    for der in setpoints.transpose():
+        norm = np.linalg.norm(der)
+        ax.plot(time, der/norm)
+
+    ax.set(xlabel='Time (5 min)', ylabel='Output (%)')
+    fig.legend()
+    plt.savefig('outputs/dispatch.png', dpi=400)
 
 
 def plot_graph(G: nx.Graph, dist: dict, pos: dict) -> None:

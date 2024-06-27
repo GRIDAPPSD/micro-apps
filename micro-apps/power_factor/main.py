@@ -13,6 +13,7 @@ from cimgraph.databases import ConnectionParameters
 from cimgraph.databases import BlazegraphConnection
 from cimgraph.databases import GridappsdConnection
 from cimgraph.models import FeederModel
+import cimgraph.data_profile.rc4_2021 as cim_dp
 from gridappsd import GridAPPSD, DifferenceBuilder
 from gridappsd.simulation import Simulation
 from gridappsd.simulation import PowerSystemConfig
@@ -29,7 +30,7 @@ IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
 IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
 IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
 IEEE123PV = "_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"
-SOURCE_BUS = '150r'
+SOURCE_BUS = "150r"
 OUT_DIR = "outputs"
 ROOT = os.getcwd()
 
@@ -39,14 +40,18 @@ logging.basicConfig(level=logging.DEBUG,
 log = logging.getLogger(__name__)
 
 
-def update_measurement(new: models.PhasePower, old: models.PhasePower) -> models.PhasePower:
-    if new.a.real != 0 or new.a.imag != 0:
-        old.a = new.a
-    if new.b.real != 0 or new.b.imag != 0:
-        old.b = new.b
-    if new.c.real != 0 or new.c.imag != 0:
-        old.c = new.c
-    return old
+def remap_phases(
+        info: models.MeasurementInfo,
+        map: models.PhaseMap) -> models.MeasurementInfo:
+    if info.phase == cim_dp.PhaseCode.s1:
+        info.phase = map.s1
+        return info
+
+    if info.phase == cim_dp.PhaseCode.s2:
+        info.phase = map.s2
+        return info
+
+    return info
 
 
 def dist_matrix(ders: dict, dists: dict) -> np.ndarray:
@@ -73,6 +78,9 @@ class PowerFactor(object):
 
     def __init__(self, gapps: GridAPPSD, sim: Simulation, network: cimgraph.GraphModel):
         self.gapps = gapps
+        self.switches = query.get_switches(network)
+        pprint(self.switches)
+        log.debug(self.switches)
         self.compensators = query.get_compensators(network)
         log.debug(self.compensators)
         self.consumers = query.get_consumers(network)
@@ -80,7 +88,8 @@ class PowerFactor(object):
         self.electronics = query.get_power_electronics(network)
         log.debug(self.electronics)
 
-        graph = query.generate_graph(network)
+        (graph, source_bus) = query.generate_graph(network)
+        print(source_bus)
         paths = nx.shortest_path_length(graph, source=SOURCE_BUS)
         self.dist = dist_matrix(query.map_power_electronics(network), paths)
 
@@ -90,44 +99,90 @@ class PowerFactor(object):
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
         if timestamp - self.last_dispatch >= 10:
             self.last_dispatch = timestamp
-            print(self.dispatch())
+            self.toggle_switches()
+            # self.dispatch()
 
         print(f"{timestamp}: on_measurement")
-
         for k, v in measurements.items():
+            if k in self.switches.measurement_map:
+                val = models.SimulationMeasurement(**v)
+                if val.value is not None:
+                    info = self.switches.measurement_map[k]
+
             if k in self.consumers.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
                     continue
 
                 info = self.consumers.measurement_map[k]
-                new = models.convert_pnv(info, val)
-                old = self.consumers.measurements[info.mrid]
-                self.consumers.measurements[info.mrid] = update_measurement(
-                    new, old)
+                if info.value_type == "PNV":
+                    old = self.consumers.measurements_pnv[info.mrid]
+                    new = models.update_pnv(info, val, old)
+                    self.consumers.measurements_pnv[info.mrid] = new
 
-            elif k in self.compensators.measurement_map:
+                if info.value_type == "VA":
+                    map = self.consumers.measurements_pnv[info.mrid]
+                    info = remap_phases(info, map)
+                    self.consumers.measurement_map[k] = info
+
+                    old = self.consumers.measurements_va[info.mrid]
+                    new = models.update_va(info, val, old)
+                    self.consumers.measurements_va[info.mrid] = new
+
+            if k in self.compensators.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
                     continue
 
                 info = self.compensators.measurement_map[k]
-                new = models.convert_pnv(info, val)
-                old = self.compensators.measurements[info.mrid]
-                self.compensators.measurements[info.mrid] = update_measurement(
-                    new, old)
+                if info.value_type == "PNV":
+                    old = self.compensators.measurements_pnv[info.mrid]
+                    new = models.update_pnv(info, val, old)
+                    self.compensators.measurements_pnv[info.mrid] = new
 
-            elif k in self.electronics.measurement_map:
+                if info.value_type == "VA":
+                    map = self.compensators.measurements_pnv[info.mrid]
+                    info = remap_phases(info, map)
+                    self.compensators.measurement_map[k] = info
+
+                    old = self.compensators.measurements_va[info.mrid]
+                    new = models.update_va(info, val, old)
+                    self.compensators.measurements_va[info.mrid] = new
+
+            if k in self.electronics.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
                     continue
 
                 info = self.electronics.measurement_map[k]
-                val = models.SimulationMeasurement(**v)
-                new = models.convert_pnv(info, val)
-                old = self.electronics.measurements[info.mrid]
-                self.electronics.measurements[info.mrid] = update_measurement(
-                    new, old)
+                if info.value_type == "PNV":
+                    old = self.electronics.measurements_pnv[info.mrid]
+                    new = models.update_pnv(info, val, old)
+                    self.electronics.measurements_pnv[info.mrid] = new
+
+                if info.value_type == "VA":
+                    map = self.electronics.measurements_pnv[info.mrid]
+                    info = remap_phases(info, map)
+                    self.electronics.measurement_map[k] = info
+
+                    old = self.electronics.measurements_va[info.mrid]
+                    new = models.update_va(info, val, old)
+                    self.electronics.measurements_va[info.mrid] = new
+
+    def toggle_switches(self) -> None:
+        diff_builder = DifferenceBuilder(sim.simulation_id)
+        v: models.MeasurementInfo
+        for k, v in self.switches.measurement_map.items():
+            if v.phase == "A":
+                print(k, v)
+                diff_builder.add_difference(
+                    k, models.Switches.open_attribute, True, False
+                )
+
+        topic = t.simulation_input_topic(sim.simulation_id)
+        message = diff_builder.get_message()
+        log.debug(message)
+        self.gapps.send(topic, message)
 
     def set_compensators(self) -> None:
         loads = dict_to_array(self.consumers.measurements)[:, :, 1]

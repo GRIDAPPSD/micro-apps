@@ -278,6 +278,9 @@ def get_power_electronics(network: cimgraph.GraphModel) -> models.PowerElectroni
     for pec in network.graph[cim_dp.PowerElectronicsConnection].values():
         mrid = pec.mRID
 
+        for unit in pec.PowerElectronicsUnit:
+            electronics.units[mrid] = unit.mRID
+
         if not pec.PowerElectronicsConnectionPhases:
             measurement = cim_dp.Measurement
             for measurement in pec.Measurements:

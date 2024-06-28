@@ -115,8 +115,6 @@ def update_pnv(
     phases = np.array([0.0, -120.0, 120.0])
     phase_id = find_nearest(phases, ang)
 
-    print(info, phase_id, ang)
-
     if info.phase == cim_dp.PhaseCode.s1:
         if phase_id == 0:
             phase_map.s1 = cim_dp.PhaseCode.A
@@ -157,6 +155,7 @@ class Compensators:
 
 @dataclass
 class PowerElectronics:
+    units: dict[str] = field(default_factory=dict)
     ratings: dict[PhasePower] = field(default_factory=dict)
     measurements_va: dict[PhasePower] = field(default_factory=dict)
     measurements_pnv: dict[PhaseMap] = field(default_factory=dict)
@@ -167,6 +166,7 @@ class PowerElectronics:
 
 @dataclass
 class Generators:
+    units: dict[str] = field(default_factory=dict)
     ratings: dict[PhasePower] = field(default_factory=dict)
     measurements_va: dict[PhasePower] = field(default_factory=dict)
     measurements_pnv: dict[PhaseMap] = field(default_factory=dict)

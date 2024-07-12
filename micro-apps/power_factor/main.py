@@ -75,6 +75,7 @@ class PowerFactor(object):
     compensators: models.Compensators
     consumers: models.Consumers
     electronics: models.PowerElectronics
+    source_mrid: str
 
     def __init__(self, gapps: GridAPPSD, sim: Simulation, network: cimgraph.GraphModel):
         self.gapps = gapps
@@ -87,23 +88,36 @@ class PowerFactor(object):
         log.debug(self.consumers)
         self.electronics = query.get_power_electronics(network)
         log.debug(self.electronics)
+        self.tranformers = query.get_Transformers(network)
+        log.debug(self.tranformers)
+        self.temp_source_bus = ["_9d721fcc-7229-42f5-b2e2-d9b0a8adecfd",
+                                "_81930576-6f0d-4c4f-a857-8e359b5210cd", "_425640dd-811d-483f-9675-03d9b516b7f8"]
 
-        (graph, source_bus) = query.generate_graph(network)
-        print(source_bus)
+        (graph, source_bus, mrid) = query.generate_graph(network)
+        self.source_mrid = mrid
         paths = nx.shortest_path_length(graph, source=source_bus)
         self.dist = dist_matrix(query.map_power_electronics(network), paths)
 
         sim.add_onmeasurement_callback(self.on_measurement)
+        self.diff_builder = DifferenceBuilder(sim.simulation_id)
+        self.topic = t.simulation_input_topic(sim.simulation_id)
         self.last_dispatch = 0
 
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
         if timestamp - self.last_dispatch >= 10:
             self.last_dispatch = timestamp
             control = self.dispatch()
+            print("Total Reactive PECS: ", np.sum(control, axis=0))
             self.set_electronics(control)
 
         print(f"{timestamp}: on_measurement")
+        if self.source_mrid in self.tranformers.measurements_va:
+            print("SOURCE: ",
+                  self.tranformers.measurements_va[self.source_mrid])
+
         for k, v in measurements.items():
+            if k in self.temp_source_bus:
+                print("SOURCE: ", k, v)
             if k in self.switches.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
@@ -149,6 +163,26 @@ class PowerFactor(object):
                     new = models.update_va(info, val, old)
                     self.compensators.measurements_va[info.mrid] = new
 
+            if k in self.tranformers.measurement_map:
+                val = models.SimulationMeasurement(**v)
+                if val.value is not None:
+                    continue
+
+                info = self.tranformers.measurement_map[k]
+                if info.value_type == "PNV":
+                    old = self.tranformers.measurements_pnv[info.mrid]
+                    new = models.update_pnv(info, val, old)
+                    self.tranformers.measurements_pnv[info.mrid] = new
+
+                if info.value_type == "VA":
+                    map = self.tranformers.measurements_pnv[info.mrid]
+                    info = remap_phases(info, map)
+                    self.tranformers.measurement_map[k] = info
+
+                    old = self.tranformers.measurements_va[info.mrid]
+                    new = models.update_va(info, val, old)
+                    self.tranformers.measurements_va[info.mrid] = new
+
             if k in self.electronics.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
@@ -170,21 +204,19 @@ class PowerFactor(object):
                     self.electronics.measurements_va[info.mrid] = new
 
     def toggle_switches(self) -> None:
-        diff_builder = DifferenceBuilder(sim.simulation_id)
         v: models.MeasurementInfo
         for k, v in self.switches.measurement_map.items():
             if v.phase == "A":
-                print(k, v)
-                diff_builder.add_difference(
+                self.diff_builder.add_difference(
                     k, models.Switches.open_attribute, True, False
                 )
 
         topic = t.simulation_input_topic(sim.simulation_id)
-        message = diff_builder.get_message()
+        message = self.diff_builder.get_message()
         log.debug(message)
         self.gapps.send(topic, message)
 
-    def set_compensators(self) -> None:
+    def set_compensators(self) -> np.ndarray:
         loads = dict_to_array(self.consumers.measurements_va)[:, :, 1]
         total_load = np.sum(loads, axis=0)
 
@@ -197,101 +229,75 @@ class PowerFactor(object):
         comps_c = {k: v for k, v in self.compensators.ratings.items()
                    if v.a.imag == 0 and v.b.imag == 0}
 
-        diff_builder = DifferenceBuilder(sim.simulation_id)
         for k, v in comps_abc.items():
             vars = np.sum(np.array(v), axis=1)
             net = total_load + vars
-            if net.all() > 0:
-                diff_builder.add_difference(
+            if net.all() < 0:
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 0, 1
                 )
-                total_load = net
             else:
-                diff_builder.add_difference(
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
+                total_load = net
 
         for k, v in comps_a.items():
             vars = np.sum(np.array(v), axis=1)
             net = total_load + vars
-            if net[0] > 0:
-                diff_builder.add_difference(
+            if net[0] < 0:
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 0, 1
                 )
-                total_load = net
             else:
-                diff_builder.add_difference(
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
+                total_load = net
 
         for k, v in comps_b.items():
             vars = np.sum(np.array(v), axis=1)
             net = total_load + vars
-            if net[1] > 0:
-                diff_builder.add_difference(
+            if net[1] < 0:
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 0, 1
                 )
-                total_load = net
             else:
-                diff_builder.add_difference(
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
+                total_load = net
 
         for k, v in comps_c.items():
             vars = np.sum(np.array(v), axis=1)
             net = total_load + vars
-            if net[2] > 0:
-                diff_builder.add_difference(
+            if net[2] < 0:
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 0, 1
                 )
-                total_load = net
             else:
-                diff_builder.add_difference(
+                self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
+                total_load = net
 
         topic = t.simulation_input_topic(sim.simulation_id)
-        message = diff_builder.get_message()
+        message = self.diff_builder.get_message()
         log.debug(message)
         self.gapps.send(topic, message)
+        return net
 
     def set_electronics(self, dispatch: np.ndarray) -> None:
-        pecs_abc = {k: v for k, v in self.electronics.ratings.items()
-                    if v.a.imag != 0 and v.b.imag != 0 and v.c.imag != 0}
-        pecs_a = {k: v for k, v in self.electronics.ratings.items()
-                  if v.b.imag == 0 and v.c.imag == 0}
-        pecs_b = {k: v for k, v in self.electronics.ratings.items()
-                  if v.a.imag == 0 and v.c.imag == 0}
-        pecs_c = {k: v for k, v in self.electronics.ratings.items()
-                  if v.a.imag == 0 and v.b.imag == 0}
-
-        diff_builder = DifferenceBuilder(sim.simulation_id)
-        for k, v in pecs_abc.items():
-            mrid = self.electronics.units[k]
-            diff_builder.add_difference(
-                mrid, models.PowerElectronics.p_attribute, v.a.real, 0.0
-            )
-
-        for k, v in pecs_a.items():
-            mrid = self.electronics.units[k]
-            diff_builder.add_difference(
-                mrid, models.PowerElectronics.p_attribute, v.a.real, 0.0
-            )
-
-        for k, v in pecs_b.items():
-            mrid = self.electronics.units[k]
-            diff_builder.add_difference(
-                mrid, models.PowerElectronics.p_attribute, v.b.real, 0.0
-            )
-
-        for k, v in pecs_c.items():
-            mrid = self.electronics.units[k]
-            diff_builder.add_difference(
-                mrid, models.PowerElectronics.p_attribute, v.c.real, 0.0
+        for idx, key in enumerate(self.electronics.ratings.keys()):
+            mrid = self.electronics.units[key]
+            print(idx, key, mrid, np.sum(dispatch[idx]))
+            self.diff_builder.add_difference(
+                mrid, models.PowerElectronics.q_attribute,
+                np.sum(dispatch[idx]), 0.0
             )
 
         topic = t.simulation_input_topic(sim.simulation_id)
-        message = diff_builder.get_message()
+        message = self.diff_builder.get_message()
         log.debug(message)
         self.gapps.send(topic, message)
 
@@ -310,17 +316,15 @@ class PowerFactor(object):
     def get_bounds(self) -> np.ndarray:
         apparent = dict_to_array(self.electronics.ratings)[:, :, 0]
         real = dict_to_array(self.electronics.measurements_va)[:, :, 0]
-        print("PECS: ", apparent, real)
+        print("Total Apparent PECS: ", np.sum(apparent, axis=0))
+        print("Total Real PECS: ", np.sum(real, axis=0))
         reactive = np.sqrt(abs(real**2 - apparent**2))
         return reactive
 
     def dispatch(self) -> np.ndarray:
-        self.set_compensators()
-
         bounds = self.get_bounds()
-        print("Bounds: ", bounds)
         A = np.clip(bounds, a_min=0, a_max=1)
-        b = self.get_phase_vars()
+        b = self.set_compensators()
 
         # constrain values to lesser of ders and network
         total_der = np.sum(bounds, axis=0)
@@ -349,7 +353,7 @@ class PowerFactor(object):
 
         print(prob.status)
 
-        return prob.status
+        return np.zeros_like(x)
 
 
 @dataclass

@@ -185,6 +185,14 @@ class Switches:
 
 
 @dataclass
+class Transformers:
+    measurements_va: dict[PhaseSwitch] = field(default_factory=dict)
+    measurements_pnv: dict[PhaseMap] = field(default_factory=dict)
+    measurement_map: dict[MeasurementInfo] = field(default_factory=dict)
+    open_attribute: str = "TapChanger.step"
+
+
+@dataclass
 class Consumers:
     ratings: dict[PhasePower] = field(default_factory=dict)
     measurements_va: dict[PhasePower] = field(default_factory=dict)

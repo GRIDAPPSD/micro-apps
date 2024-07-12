@@ -8,7 +8,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str):
+def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str, str):
     graph = nx.Graph()
 
     network.get_all_edges(cim_dp.ACLineSegment)
@@ -17,18 +17,13 @@ def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str):
     network.get_all_edges(cim_dp.Terminal)
 
     source_bus = ""
+    next_bus = ""
+    mrid = ""
     source: cim_dp.EnergySource
     for source in network.graph[cim_dp.EnergySource].values():
         terminals = source.Terminals
         bus_1 = terminals[0].ConnectivityNode.name
         source_bus = bus_1
-
-    line: cim_dp.ACLineSegment
-    for line in network.graph[cim_dp.ACLineSegment].values():
-        terminals = line.Terminals
-        bus_1 = terminals[0].ConnectivityNode.name
-        bus_2 = terminals[1].ConnectivityNode.name
-        graph.add_edge(bus_1, bus_2, weight=float(line.length))
 
     xfmr: cim_dp.PowerTransformer
     for xfmr in network.graph[cim_dp.PowerTransformer].values():
@@ -40,16 +35,43 @@ def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str):
         buses = list(set(buses))
         bus_1 = buses[0]
         bus_2 = buses[-1]
+        if source_bus == bus_1:
+            mrid = xfmr.mRID
+            next_bus = bus_2
+            print("Xfmr 1:", mrid, next_bus)
+        if source_bus == bus_2:
+            mrid = xfmr.mRID
+            next_bus = bus_1
+            print("Xfmr 2:", mrid, next_bus)
         graph.add_edge(bus_1, bus_2, weight=0.0)
+
+    line: cim_dp.ACLineSegment
+    for line in network.graph[cim_dp.ACLineSegment].values():
+        terminals = line.Terminals
+        bus_1 = terminals[0].ConnectivityNode.name
+        bus_2 = terminals[1].ConnectivityNode.name
+        if next_bus == bus_1:
+            mrid = line.mRID
+            print("Line 1:", mrid)
+        if next_bus == bus_2:
+            mrid = line.mRID
+            print("Line 2:", mrid)
+        graph.add_edge(bus_1, bus_2, weight=float(line.length))
 
     switch: cim_dp.LoadBreakSwitch
     for switch in network.graph[cim_dp.LoadBreakSwitch].values():
         terminals = switch.Terminals
         bus_1 = terminals[0].ConnectivityNode.name
         bus_2 = terminals[1].ConnectivityNode.name
+        if source_bus == bus_1:
+            mrid = switch.mRID
+            print("Switch 1:", mrid)
+        if source_bus == bus_2:
+            mrid = switch.mRID
+            print("Switch 2:", mrid)
         graph.add_edge(bus_1, bus_2, weight=0.0)
 
-    return (graph, source_bus)
+    return (graph, source_bus, mrid)
 
 
 def get_graph_positions(network: cimgraph.models.GraphModel) -> dict:
@@ -115,7 +137,7 @@ def get_compensators(network: cimgraph.models.GraphModel) -> models.Compensators
                     s1 = measurement.phases == cim_dp.PhaseCode.s1
                     s2 = measurement.phases == cim_dp.PhaseCode.s2
                     if not (s1 or s2):
-                        print(mrid, measurement.name,
+                        print("IGNORING: ", mrid, measurement.name,
                               measurement.measurementType, measurement.phases)
                         continue
 
@@ -188,7 +210,7 @@ def get_consumers(network: cimgraph.GraphModel) -> models.Consumers:
                     s1 = measurement.phases == cim_dp.PhaseCode.s1
                     s2 = measurement.phases == cim_dp.PhaseCode.s2
                     if not (s1 or s2):
-                        print(mrid, measurement.name,
+                        print("IGNORING: ", mrid, measurement.name,
                               measurement.measurementType, measurement.phases)
                         continue
 
@@ -255,7 +277,7 @@ def get_switches(network: cimgraph.GraphModel) -> models.Switches:
                     s1 = measurement.phases == cim_dp.PhaseCode.s1
                     s2 = measurement.phases == cim_dp.PhaseCode.s2
                     if not (s1 or s2):
-                        print(mrid, measurement.name,
+                        print("IGNORING: ", mrid, measurement.name,
                               measurement.measurementType, measurement.phases)
                         continue
 
@@ -328,7 +350,107 @@ def get_power_electronics(network: cimgraph.GraphModel) -> models.PowerElectroni
                     s1 = measurement.phases == cim_dp.PhaseCode.s1
                     s2 = measurement.phases == cim_dp.PhaseCode.s2
                     if not (s1 or s2):
-                        print(mrid, measurement.name,
+                        print("IGNORING: ", mrid, measurement.name,
+                              measurement.measurementType, measurement.phases)
+                        continue
+
+                info = models.MeasurementInfo(
+                    mrid=mrid, value_type=measurement.measurementType, phase=measurement.phases)
+                electronics.measurement_map[measurement.mRID] = info
+
+            electronics.measurements_va[mrid] = models.PhasePower()
+            electronics.measurements_pnv[mrid] = models.PhaseMap()
+
+    return electronics
+
+
+def get_Transformers(network: cimgraph.GraphModel) -> models.Transformers:
+    transformers = models.Transformers()
+    if cim_dp.PowerTransformer not in network.graph:
+        return transformers
+
+    xfmr: cim_dp.PowerTransformer
+    for xfmr in network.graph[cim_dp.PowerTransformer].values():
+        mrid = xfmr.mRID
+
+        measurement = cim_dp.Measurement
+        for measurement in xfmr.Measurements:
+            print(measurement.mRID, measurement.measurementType, measurement.phases)
+            pnv = measurement.measurementType == "PNV"
+            va = measurement.measurementType == "VA"
+            if not (pnv or va):
+                continue
+
+            info = models.MeasurementInfo(
+                mrid=mrid, value_type=measurement.measurementType, phase=measurement.phases)
+            transformers.measurement_map[measurement.mRID] = info
+
+            transformers.measurements_va[mrid] = models.PhasePower()
+            transformers.measurements_pnv[mrid] = models.PhaseMap()
+
+    return transformers
+
+
+def get_power_electronics(network: cimgraph.GraphModel) -> models.PowerElectronics:
+    electronics = models.PowerElectronics()
+    if cim_dp.PowerElectronicsConnection not in network.graph:
+        return electronics
+
+    pec: cim_dp.PowerElectronicsConnection
+    for pec in network.graph[cim_dp.PowerElectronicsConnection].values():
+        mrid = pec.mRID
+
+        for unit in pec.PowerElectronicsUnit:
+            electronics.units[mrid] = unit.mRID
+
+        if not pec.PowerElectronicsConnectionPhases:
+            measurement = cim_dp.Measurement
+            for measurement in pec.Measurements:
+
+                pnv = measurement.measurementType == "PNV"
+                va = measurement.measurementType == "VA"
+                if not (pnv or va):
+                    continue
+
+                info = models.MeasurementInfo(
+                    mrid=mrid, value_type=measurement.measurementType, phase=measurement.phases)
+                electronics.measurement_map[measurement.mRID] = info
+
+            electronics.measurements_va[mrid] = models.PhasePower()
+            electronics.measurements_pnv[mrid] = models.PhaseMap()
+
+            rated_s = float(pec.ratedS)
+            power = models.ComplexPower(real=rated_s/3, imag=rated_s/3)
+            ratings = models.PhasePower(a=power, b=power, c=power)
+            electronics.ratings[mrid] = ratings
+
+        else:
+            ratings = models.PhasePower()
+            phase: cim_dp.PowerElectronicsConnectionPhase
+            for phase in pec.PowerElectronicsConnectionPhases:
+                power = models.ComplexPower(
+                    real=float(phase.p), imag=float(phase.q))
+                if phase.phase == cim_dp.SinglePhaseKind.A:
+                    ratings.a = power
+                if phase.phase == cim_dp.SinglePhaseKind.B:
+                    ratings.b = power
+                if phase.phase == cim_dp.SinglePhaseKind.C:
+                    ratings.c = power
+            electronics.ratings[mrid] = ratings
+
+            measurement = cim_dp.Measurement
+            for measurement in pec.Measurements:
+
+                pnv = measurement.measurementType == "PNV"
+                va = measurement.measurementType == "VA"
+                if not (pnv or va):
+                    continue
+
+                if measurement.measurementType == "PNV":
+                    s1 = measurement.phases == cim_dp.PhaseCode.s1
+                    s2 = measurement.phases == cim_dp.PhaseCode.s2
+                    if not (s1 or s2):
+                        print("IGNORING: ", mrid, measurement.name,
                               measurement.measurementType, measurement.phases)
                         continue
 

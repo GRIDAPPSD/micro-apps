@@ -332,7 +332,7 @@ class ConservationVoltageReductionController(object):
             },
             'resultFormat': 'JSON'
         }
-        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message)
+        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=60)
         base_dss_dict = json.loads(base_dss_response.get('message', ''), strict=False)
         base_dss_str = base_dss_dict.get('data', '')
         fileDir = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}' / 'master.dss'
@@ -871,8 +871,8 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
-        duration=f'{24*3600}',
-    # duration=120,
+        # duration=f'{24*3600}',
+        duration=120,
         simulation_name=sim_name,
         run_realtime=False,
         pause_after_measurements=False)

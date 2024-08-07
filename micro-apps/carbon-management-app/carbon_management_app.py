@@ -112,6 +112,10 @@ class CarbonManagementApp(object):
         self.Battery = {}
         self.Solar = {}
         self.EnergyConsumer = {}
+        if PowerElectronicsConnection not in network.graph:
+            raise ValueError("No power electronic devices in netork.")
+        if len(network.graph[PowerElectronicsConnection].keys()) == 0:
+            raise ValueError("No power electronic devices in netork.")
         for pec in network.graph[PowerElectronicsConnection].values():
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:
@@ -151,6 +155,9 @@ class CarbonManagementApp(object):
                     self.Solar[unit_mrid]['measurementmRID'].append(measurement.mRID)
                     if  measurement.phases.value is not None:
                         self.Solar[unit_mrid]['measurementPhases'].append(measurement.phases.value)
+
+        if len(self.Battery) == 0:
+            raise ValueError("No batteries in network.")
 
         for ld in network.graph[EnergyConsumer].values():
             ld_mrid = ld.mRID

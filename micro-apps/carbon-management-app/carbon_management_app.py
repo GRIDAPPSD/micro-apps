@@ -113,9 +113,9 @@ class CarbonManagementApp(object):
         self.Solar = {}
         self.EnergyConsumer = {}
         if PowerElectronicsConnection not in network.graph:
-            raise ValueError("No power electronic devices in netork.")
+            raise ValueError("No power electronic devices in network.")
         if len(network.graph[PowerElectronicsConnection].keys()) == 0:
-            raise ValueError("No power electronic devices in netork.")
+            raise ValueError("No power electronic devices in network.")
         for pec in network.graph[PowerElectronicsConnection].values():
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:

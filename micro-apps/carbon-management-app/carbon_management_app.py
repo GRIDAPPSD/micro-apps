@@ -112,24 +112,50 @@ class CarbonManagementApp(object):
         self.Battery = {}
         self.Solar = {}
         self.EnergyConsumer = {}
+        self.has_batteries = True
+        self.has_power_electronics = True
+        self.has_energy_consumers = True
         if PowerElectronicsConnection not in network.graph:
-            raise ValueError("No power electronic devices in netork.")
-        if len(network.graph[PowerElectronicsConnection].keys()) == 0:
-            raise ValueError("No power electronic devices in netork.")
+            self.has_power_electronics = False
+            self.has_batteries = False
+            # raise ValueError("No power electronic devices in network.")
+        elif len(network.graph[PowerElectronicsConnection].keys()) == 0:
+            self.has_power_electronics = False
+            self.has_batteries = False
+        if EnergyConsumer not in network.graph:
+            self.has_energy_consumers = False
+
+        if self.has_power_electronics:
+            self._collect_power_electronic_devices(network)
+            # raise ValueError("No power electronic devices in network.")
+
+        if len(self.Battery) == 0:
+            self.has_batteries = False
+            # raise ValueError("No batteries in network.")
+
+        if self.has_energy_consumers:
+            self._collect_energy_consumers(network)
+
+        simulation.add_onmeasurement_callback(self.on_measurement)
+        # simulation.start_simulation()
+
+    def _collect_power_electronic_devices(self, network):
         for pec in network.graph[PowerElectronicsConnection].values():
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:
                 unit_mrid = unit.mRID
                 if isinstance(unit, BatteryUnit):
-                    self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [], 'measurementPhases': []}
+                    self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
+                                               'measurementPhases': []}
                     self.Battery[unit_mrid]['name'] = unit.name
                     self.Battery[unit_mrid]['ratedS'] = float(pec.ratedS) / 1000
                     self.Battery[unit_mrid]['ratedE'] = float(unit.ratedE) / 1000
                 else:
-                    self.Solar[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [], 'measurementPhases': []}
+                    self.Solar[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
+                                             'measurementPhases': []}
                     self.Solar[unit_mrid]['name'] = pec.name
                     self.Solar[unit_mrid]['ratedS'] = float(pec.ratedS) / 1000
-            
+
             if not pec.PowerElectronicsConnectionPhases:
                 if unit_mrid in self.Battery:
                     self.Battery[unit_mrid]['phases'] = 'ABC'
@@ -143,22 +169,20 @@ class CarbonManagementApp(object):
                     self.Battery[unit_mrid]['phases'] = phases
                 if unit_mrid in self.Solar:
                     self.Solar[unit_mrid]['phases'] = phases
-            
+
             for measurement in pec.Measurements:
                 if unit_mrid in self.Battery:
                     self.Battery[unit_mrid]['measurementType'].append(measurement.measurementType)
                     self.Battery[unit_mrid]['measurementmRID'].append(measurement.mRID)
-                    if  measurement.phases.value is not None:
+                    if measurement.phases.value is not None:
                         self.Battery[unit_mrid]['measurementPhases'].append(measurement.phases.value)
                 if unit_mrid in self.Solar:
                     self.Solar[unit_mrid]['measurementType'].append(measurement.measurementType)
                     self.Solar[unit_mrid]['measurementmRID'].append(measurement.mRID)
-                    if  measurement.phases.value is not None:
+                    if measurement.phases.value is not None:
                         self.Solar[unit_mrid]['measurementPhases'].append(measurement.phases.value)
 
-        if len(self.Battery) == 0:
-            raise ValueError("No batteries in network.")
-
+    def _collect_energy_consumers(self, network):
         for ld in network.graph[EnergyConsumer].values():
             ld_mrid = ld.mRID
             self.EnergyConsumer[ld_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [], 'measurementPhases': []}
@@ -173,12 +197,9 @@ class CarbonManagementApp(object):
             for measurement in ld.Measurements:
                 self.EnergyConsumer[ld_mrid]['measurementType'].append(measurement.measurementType)
                 self.EnergyConsumer[ld_mrid]['measurementmRID'].append(measurement.mRID)
-                if  measurement.phases.value is not None:
+                if measurement.phases.value is not None:
                     self.EnergyConsumer[ld_mrid]['measurementPhases'].append(measurement.phases.value)
 
-        simulation.add_onmeasurement_callback(self.on_measurement)
-        # simulation.start_simulation()
-    
     def find_phase(self, degree):
         ref_points = [0, 120, -120]
         closest = min(ref_points, key=lambda x: abs(degree - x))
@@ -357,6 +378,8 @@ class CarbonManagementApp(object):
 
 
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
+        if not self.has_batteries:
+            return
         if self._count % 10 == 0:
             # Call function to extract simulation measurements from injection sources
             self.find_injection(self.Battery, measurements)
@@ -467,8 +490,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     if not isinstance(model_id, str) and model_id is not None:
         raise TypeError(
             f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
-    
-    gapps = GridAPPSD(username='system', password='manager')
+
     cim_profile = 'rc4_2021'
     cim = importlib.import_module('cimgraph.data_profile.' + cim_profile)
     feeder = cim.Feeder(mRID=model_id)
@@ -477,7 +499,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         cim_profile=cim_profile)
 
     gapps = GridAPPSD(username='system', password='manager')
-
+    print(json.dumps(gapps.get_platform_status(), indent=4))
     bg = BlazegraphConnection(params)
     network = FeederModel(
         connection=bg,
@@ -518,8 +540,14 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         c_mapp = CarbonManagementApp(
             gapps, m_id, network, simulation=simulation)
         # gapps.subscribe(measurements_topic, c_mapp)
-        while True:
-            time.sleep(0.1)
+        try:
+            while True:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("Simulation manually stopped.")
+        finally:
+            print(" -- Stopping simulation -- ")
+            simulation.stop()
 
 
 
@@ -537,4 +565,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # args.start_simulations = True
     # args.model_id = '_EE71F6C9-56F0-4167-A14E-7F4C71F10EAA'
+    # try:
     main(args.disable_control, args.start_simulations, args.model_id)
+    # finally:

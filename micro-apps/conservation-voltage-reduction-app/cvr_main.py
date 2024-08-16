@@ -332,7 +332,7 @@ class ConservationVoltageReductionController(object):
             },
             'resultFormat': 'JSON'
         }
-        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=60)
+        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=120)
         base_dss_dict = json.loads(base_dss_response.get('message', ''), strict=False)
         base_dss_str = base_dss_dict.get('data', '')
         fileDir = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}' / 'master.dss'

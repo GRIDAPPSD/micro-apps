@@ -131,6 +131,7 @@ class CarbonManagementApp(object):
 
         if len(self.Battery) == 0:
             self.has_batteries = False
+            print("No batteries in system.")
             # raise ValueError("No batteries in network.")
 
         if self.has_energy_consumers:
@@ -499,7 +500,6 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         cim_profile=cim_profile)
 
     gapps = GridAPPSD(username='system', password='manager')
-    print(json.dumps(gapps.get_platform_status(), indent=4))
     bg = BlazegraphConnection(params)
     network = FeederModel(
         connection=bg,
@@ -565,6 +565,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # args.start_simulations = True
     # args.model_id = '_EE71F6C9-56F0-4167-A14E-7F4C71F10EAA'
-    # try:
     main(args.disable_control, args.start_simulations, args.model_id)
-    # finally:

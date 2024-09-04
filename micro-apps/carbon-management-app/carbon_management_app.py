@@ -27,6 +27,7 @@ from gridappsd.simulation import SimulationConfig
 from gridappsd.simulation import SimulationArgs
 from gridappsd.simulation import ModelCreationConfig
 from gridappsd import topics as t
+import csv
 
 IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
 IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
@@ -143,6 +144,7 @@ class CarbonManagementApp(object):
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:
                 unit_mrid = unit.mRID
+                print(type(unit))
                 if isinstance(unit, BatteryUnit):
                     self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
                                                'measurementPhases': []}
@@ -366,6 +368,9 @@ class CarbonManagementApp(object):
             dispatch_batteries[batt] = {}
             dispatch_batteries[batt]['p_batt'] = p_batt[idx].value * 1000
             optimization_solution_table.append([name, self.Battery[batt]['phases'], p_batt[idx].value])
+            data = [timestamp, name, self.Battery[batt]['phases'], p_batt[idx].value]
+            header = ["time", "battery", "phases", "p_batt"]
+            add_data_to_csv("optimization_result.csv", data, header=header)
             idx += 1
         print('Optimization Solution')
         print(tabulate(optimization_solution_table, headers=['Battery', 'phases', 'P_batt (kW)'], tablefmt='psql'))
@@ -375,6 +380,12 @@ class CarbonManagementApp(object):
                         '{:.3f}'.format(p_flow_C.value)]
         optimization_summary = []
         optimization_summary.append([load_pv, load_pv_batt, problem.status])
+        data = [timestamp]
+        data.extend(load_pv)
+        data.extend(load_pv_batt)
+        data.append(problem.status)
+        header = ["time", "load_pv_a", "load_pv_b", "load_pv_c", "load_pv_batt_a", "load_pv_batt_b", "load_pv_batt_c", "status"]
+        add_data_to_csv("optimization_summary.csv", data, header=header)
         print(tabulate(optimization_summary, headers=['Load+PV (kW)', 'Load+PV+Batt (kW)', 'Status'], tablefmt='psql'))
         return dispatch_batteries
 
@@ -392,8 +403,13 @@ class CarbonManagementApp(object):
             for batt in self.Battery:
                 name = self.Battery[batt]['name']
                 phases = self.Battery[batt]['phases']
+                data = [timestamp, name, phases]
                 simulation_table_batteries.append(
                     [name, phases, self.Battery[batt]['P_inj'], self.Battery[batt]['soc']])
+                data.extend(self.Battery[batt]['P_inj'])
+                data.extend([self.Battery[batt]['soc']])
+                header=["time","battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+                add_data_to_csv("simulation_table.csv", data, header=header)
             print(f'\n.......Curren timestamp: {timestamp}.......\n')
             print('Simulation Table')
             print(tabulate(simulation_table_batteries, headers=['Battery', 'phases', 'P_batt (kW)', 'SOC'],
@@ -550,6 +566,20 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         finally:
             print(" -- Stopping simulation -- ")
             simulation.stop()
+
+
+def add_data_to_csv(file_path, data, header=None):
+    # Check if the file exists
+    file_exists = os.path.isfile(file_path)
+
+    # Open the CSV file in append mode (or create it if it doesn't exist)
+    with open(file_path, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # If the file doesn't exist, write the header first
+        if not file_exists and header:
+            writer.writerow(header)
+        # Write the data (a list or tuple representing a row)
+        writer.writerow(data)
 
 
 if __name__ == "__main__":

@@ -38,11 +38,9 @@ def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str, str):
         if source_bus == bus_1:
             mrid = xfmr.mRID
             next_bus = bus_2
-            print("Xfmr 1:", mrid, next_bus)
         if source_bus == bus_2:
             mrid = xfmr.mRID
             next_bus = bus_1
-            print("Xfmr 2:", mrid, next_bus)
         graph.add_edge(bus_1, bus_2, weight=0.0)
 
     line: cim_dp.ACLineSegment
@@ -52,23 +50,20 @@ def generate_graph(network: cimgraph.models.GraphModel) -> (nx.Graph, str, str):
         bus_2 = terminals[1].ConnectivityNode.name
         if next_bus == bus_1:
             mrid = line.mRID
-            print("Line 1:", mrid)
         if next_bus == bus_2:
             mrid = line.mRID
-            print("Line 2:", mrid)
         graph.add_edge(bus_1, bus_2, weight=float(line.length))
 
     switch: cim_dp.LoadBreakSwitch
     for switch in network.graph[cim_dp.LoadBreakSwitch].values():
+        # if not switch.normalOpen:
         terminals = switch.Terminals
         bus_1 = terminals[0].ConnectivityNode.name
         bus_2 = terminals[1].ConnectivityNode.name
         if source_bus == bus_1:
             mrid = switch.mRID
-            print("Switch 1:", mrid)
         if source_bus == bus_2:
             mrid = switch.mRID
-            print("Switch 2:", mrid)
         graph.add_edge(bus_1, bus_2, weight=0.0)
 
     return (graph, source_bus, mrid)
@@ -375,7 +370,6 @@ def get_Transformers(network: cimgraph.GraphModel) -> models.Transformers:
 
         measurement = cim_dp.Measurement
         for measurement in xfmr.Measurements:
-            print(measurement.mRID, measurement.measurementType, measurement.phases)
             pnv = measurement.measurementType == "PNV"
             va = measurement.measurementType == "VA"
             if not (pnv or va):

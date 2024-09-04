@@ -49,6 +49,23 @@ class PhasePower:
     def __getitem__(self, item):
         return astuple(self).__getitem__(item)
 
+    def set_phases(self, real: list[float], imag: list[float]) -> None:
+        if len(real) == 0:
+            real = [self.a.real, self.b.real, self.c.real]
+
+        if len(imag) == 0:
+            imag = [self.a.imag, self.b.imag, self.c.imag]
+
+        assert (3 == len(real))
+        assert (3 == len(imag))
+        print(real, imag)
+        self.a = ComplexPower(
+            real=real[0], imag=imag[0])
+        self.b = ComplexPower(
+            real=real[1], imag=imag[1])
+        self.c = ComplexPower(
+            real=real[2], imag=imag[2])
+
 
 @dataclass
 class PhaseMap:
@@ -198,3 +215,20 @@ class Consumers:
     measurements_va: dict[PhasePower] = field(default_factory=dict)
     measurements_pnv: dict[PhaseMap] = field(default_factory=dict)
     measurement_map: dict[MeasurementInfo] = field(default_factory=dict)
+
+
+@dataclass
+class Data:
+    timestamp: int
+    total_load: PhasePower
+    net_load: PhasePower
+    pec_dispatch: PhasePower
+    pecs: dict[PhasePower] = field(default_factory=dict)
+
+
+@dataclass
+class DataInfo:
+    pecs_distance: dict[float] = field(default_factory=dict)
+    pecs_ratings: dict[PhasePower] = field(default_factory=dict)
+    compensators_ratings: dict[PhasePower] = field(default_factory=dict)
+    data: list[Data] = field(default_factory=list)

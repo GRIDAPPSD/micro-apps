@@ -15,7 +15,8 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
-
+import csv
+from pathlib import Path
 cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
@@ -107,6 +108,7 @@ class ConservationVoltageReductionController(object):
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
+        self.model_id = model_id
         self.id = uuid4()
         self.platform_measurements = {}
         self.desired_setpoints = {}
@@ -184,7 +186,8 @@ class ConservationVoltageReductionController(object):
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
-        measurements = self.graph_model.graph.get(cim.Analog, {})
+        measurements = {}
+        measurements.update(self.graph_model.graph.get(cim.Analog, {}))
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
 
         # print(measurements.keys())
@@ -215,24 +218,38 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
+        # data output
+        out_dir = Path(__file__).parent/"output"
+        feeder = self.graph_model.graph.get(cim.Feeder, {}).get(self.model_id)
+        self.model_results_path = out_dir/feeder.name
+        self.model_results_path.mkdir(parents=True, exist_ok=True)
+        print(self.model_results_path.resolve())
+        for child in self.model_results_path.iterdir():
+            child.unlink()
+        with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "voltage"]
+            writer.writerow(header)
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
-                self.pnv_measurements[mrid]['measurement_value'] = meas
+                self.pnv_measurements[mrid]['measurement_value'] = meas  # phase to neutral voltage
         for psr_mrid in self.va_measurements.keys():
-            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
+            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys(): # s (volt-amps)
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
         for psr_mrid in self.pos_measurements.keys():
-            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
+            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():  # capacitor status and tap positions
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
+
         self.calculate_per_unit_voltage()
+        self.save_voltage_data(timestamp)
         self.update_opendss_with_measurements()
         if int(timestamp) > self.next_control_time:
             self.cvr_control()
@@ -311,6 +328,18 @@ class ConservationVoltageReductionController(object):
                       f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
             self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
+
+    def save_voltage_data(self, time):
+        file_path = self.model_results_path/"voltages.csv"
+        header = ["time", "mrid", "node", "phase", "voltage"]
+        for mrid in self.pnv_measurements.keys():
+            v = self.pnv_measurements_pu[mrid]
+            phase = self.pnv_measurements[mrid]["measurement_object"].phases.value
+            node = self.pnv_measurements[mrid]["measurement_object"].Terminal.ConnectivityNode.name
+            if v is not None:
+                data = [time, mrid, node, phase, v]
+                add_data_to_csv(file_path, data, header=header)
+
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -866,14 +895,15 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    start_time = 1726081200  # 9/11/2024 12:00:00 PDT
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
         # duration=f'{24*3600}',
-        duration=120,
+        duration=121,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=False)
+        pause_after_measurements=True)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -901,6 +931,19 @@ def removeDirectory(directory: Path | str):
         else:
             item.unlink()
     directory.rmdir()
+
+
+def add_data_to_csv(file_path, data, header=None):
+    # Check if the file exists
+    file_exists = os.path.isfile(file_path)
+    # Open the CSV file in append mode (or create it if it doesn't exist)
+    with open(file_path, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # If the file doesn't exist, write the header first
+        if not file_exists and header:
+            writer.writerow(header)
+        # Write the data (a list or tuple representing a row)
+        writer.writerow(data)
 
 
 def main(control_enabled: bool, start_simulations: bool, model_id: str = None):

@@ -3,7 +3,7 @@ import math
 import os
 from argparse import ArgumentParser
 from datetime import datetime
-from typing import Any, Dict, Union
+from typing import Any, Dict
 from uuid import uuid4
 
 import cimgraph.utils as cimUtils
@@ -15,7 +15,8 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
-
+import csv
+from pathlib import Path
 cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
@@ -107,6 +108,7 @@ class ConservationVoltageReductionController(object):
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
+        self.model_id = model_id
         self.id = uuid4()
         self.platform_measurements = {}
         self.desired_setpoints = {}
@@ -157,6 +159,19 @@ class ConservationVoltageReductionController(object):
         # print(powerTransformers.keys())
         # print(ratioTapChangers.keys())
         for mRID, powerTransformer in powerTransformers.items():
+            for powerTransformerEnd in powerTransformer.PowerTransformerEnd:
+                if powerTransformerEnd.RatioTapChanger is not None:
+                    if mRID not in self.controllable_regulators.keys():
+                        self.controllable_regulators[mRID] = {}
+                        self.controllable_regulators[mRID]['RatioTapChangers'] = []
+                        self.controllable_regulators[mRID]['PhasesToName'] = {}
+                    self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
+                    self.controllable_regulators[mRID]['RatioTapChangers'].append(powerTransformerEnd.RatioTapChanger)
+                    self.controllable_regulators[mRID]['PhasesToName'] = {
+                        'A': powerTransformer.name,
+                        'B': powerTransformer.name,
+                        'C': powerTransformer.name
+                    }
             for transformerTank in powerTransformer.TransformerTanks:
                 for transformerEnd in transformerTank.TransformerTankEnds:
                     if transformerEnd.RatioTapChanger is not None:
@@ -164,13 +179,15 @@ class ConservationVoltageReductionController(object):
                             self.controllable_regulators[mRID] = {}
                             self.controllable_regulators[mRID]['RatioTapChangers'] = []
                             self.controllable_regulators[mRID]['PhasesToName'] = {}
-                        self.controllable_regulators[mRID]['regulator_name'] = powerTransformer.name
+                        self.controllable_regulators[mRID]['regulator_object'] = powerTransformer
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
-                            transformerEnd.RatioTapChanger.name
+                            transformerTank.name
+
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
-        measurements = self.graph_model.graph.get(cim.Analog, {})
+        measurements = {}
+        measurements.update(self.graph_model.graph.get(cim.Analog, {}))
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
 
         # print(measurements.keys())
@@ -201,24 +218,38 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
+        # data output
+        out_dir = Path(__file__).parent/"output"
+        feeder = self.graph_model.graph.get(cim.Feeder, {}).get(self.model_id)
+        self.model_results_path = out_dir/feeder.name
+        self.model_results_path.mkdir(parents=True, exist_ok=True)
+        print(self.model_results_path.resolve())
+        for child in self.model_results_path.iterdir():
+            child.unlink()
+        with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "voltage"]
+            writer.writerow(header)
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
-                self.pnv_measurements[mrid]['measurement_value'] = meas
+                self.pnv_measurements[mrid]['measurement_value'] = meas  # phase to neutral voltage
         for psr_mrid in self.va_measurements.keys():
-            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
+            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys(): # s (volt-amps)
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
         for psr_mrid in self.pos_measurements.keys():
-            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
+            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():  # capacitor status and tap positions
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
+
         self.calculate_per_unit_voltage()
+        self.save_voltage_data(timestamp)
         self.update_opendss_with_measurements()
         if int(timestamp) > self.next_control_time:
             self.cvr_control()
@@ -226,16 +257,27 @@ class ConservationVoltageReductionController(object):
             self.voltage_violation_time = -1
         else:
             total_violation_time = 0
-            for val in self.pnv_measurements_pu.values():
+            voltage_violation_phases = ''
+            for mrid, val in self.pnv_measurements_pu.items():
                 if val is not None:
                     if val < self.low_volt_lim:
                         if self.voltage_violation_time < 0:
                             self.voltage_violation_time = int(timestamp)
+                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                            if isinstance(meas, cim.Measurement):
+                                measPhase = meas.phases
+                                if measPhase in [
+                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                ]:
+                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                if measPhase.value not in voltage_violation_phases:
+                                    voltage_violation_phases += measPhase.value
                         else:
                             total_violation_time = int(timestamp) - self.voltage_violation_time
                         break
             if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                self.cvr_control()
+                self.cvr_control(voltage_violation_phases)
                 self.voltage_violation_time = int(timestamp)
         if self.simulation is not None:
             self.simulation.resume()
@@ -279,13 +321,25 @@ class ConservationVoltageReductionController(object):
                             print(f'meas_term.ConductingEquipment.BaseVoltage is None')
                     else:
                         print(f'meas_term.ConductingEquipment is None')
-            print(f'base voltage is {meas_base}V')
+            # print(f'base voltage is {meas_base}V')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
                 print('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
                       f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
             self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
+
+    def save_voltage_data(self, time):
+        file_path = self.model_results_path/"voltages.csv"
+        header = ["time", "mrid", "node", "phase", "voltage"]
+        for mrid in self.pnv_measurements.keys():
+            v = self.pnv_measurements_pu[mrid]
+            phase = self.pnv_measurements[mrid]["measurement_object"].phases.value
+            node = self.pnv_measurements[mrid]["measurement_object"].Terminal.ConnectivityNode.name
+            if v is not None:
+                data = [time, mrid, node, phase, v]
+                add_data_to_csv(file_path, data, header=header)
+
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -305,7 +359,7 @@ class ConservationVoltageReductionController(object):
             },
             'resultFormat': 'JSON'
         }
-        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message)
+        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=120)
         base_dss_dict = json.loads(base_dss_response.get('message', ''), strict=False)
         base_dss_str = base_dss_dict.get('data', '')
         fileDir = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}' / 'master.dss'
@@ -387,7 +441,7 @@ class ConservationVoltageReductionController(object):
                             tapStep = 1.0 + (pos_val[0] * regulationPerStep)
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
 
-    def cvr_control(self):
+    def cvr_control(self, phases: str = None):
         capacitor_list = []
         for cap_mrid, cap in self.controllable_capacitors.items():
             cap_meas_dict = self.pos_measurements.get(cap_mrid)
@@ -400,30 +454,46 @@ class ConservationVoltageReductionController(object):
             if pos is not None:
                 # For a capacitor, pos = 1 means the capacitor is connected to the grid. Otherwise, it's 0.
                 capacitor_list.append((cap_mrid, cap, cap.bPerSection, pos['value'], True))
-        if capacitor_list:
-            meas_list = []
-            # FIXMEOr: Is this going to pnv_measurements_pu too many times?
-            for meas_mrid in self.pnv_measurements_pu.keys():
-                if self.pnv_measurements_pu[meas_mrid] is not None:
-                    meas_list.append(self.pnv_measurements_pu[meas_mrid])
-            if meas_list:
-                if min(meas_list) > self.low_volt_lim:
+        regulator_list = []
+        for psr_mrid, psr_dict in self.controllable_regulators.items():
+            tapChangersList = self.controllable_regulators.get(psr_mrid, {}).get('RatioTapChangers', [])
+            if tapChangersList:
+                regulator_list.append((psr_mrid, tapChangersList, phases))
+        if not (capacitor_list or regulator_list):
+            return
+        meas_list = []
+        # FIXMEOr: Is this going to pnv_measurements_pu too many times?
+        for meas_mrid in self.pnv_measurements_pu.keys():
+            if self.pnv_measurements_pu[meas_mrid] is not None:
+                meas_list.append(self.pnv_measurements_pu[meas_mrid])
+        if meas_list:
+            if min(meas_list) > self.low_volt_lim:
+                if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2], reverse=True)
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 1:
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.decrease_voltage_capacitor(local_capacitor_list))
-                else:
+                if regulator_list:
+                    self.desired_setpoints.update(self.decrease_voltage_regulator(regulator_list))
+            else:
+                if capacitor_list:
                     sorted(capacitor_list, key=lambda x: x[2])
                     local_capacitor_list = []
                     for element_tuple in capacitor_list:
                         if element_tuple[3] == 0:
                             local_capacitor_list.append(element_tuple)
                     self.desired_setpoints.update(self.increase_voltage_capacitor(local_capacitor_list))
+                if regulator_list:
+                    self.desired_setpoints.update(self.increase_voltage_regulator(regulator_list))
+
+        # FIXMEOr: Check the update_opendss_with_measurements function.
 
         if self.desired_setpoints:
             self.send_setpoints()
+
+        return
 
     def increase_voltage_capacitor(self, cap_list: list) -> dict:
         return_dict = {}
@@ -497,6 +567,139 @@ class ConservationVoltageReductionController(object):
         print(f'return_dict length: {len(return_dict)}')
         return return_dict
 
+    def decrease_voltage_regulator(self, reg_list: list) -> dict:
+        tap_budget = 5
+        return_dict = {}
+        while reg_list:
+            element_tuple = reg_list.pop(0)
+            psr_mrid = element_tuple[0]
+            oldSetpointRatio = [None] * len(element_tuple[1])
+            newSetpointRatio = [None] * len(element_tuple[1])
+            stopDecrease = [False] * len(element_tuple[1])
+            for i in range(tap_budget):
+                if False not in stopDecrease:
+                    break
+                for j in range(len(element_tuple[1])):
+                    if stopDecrease[j]:
+                        continue
+                    rtp = element_tuple[1][j]
+                    xfmrEnd = rtp.TransformerEnd
+                    rtpName = ''
+                    if isinstance(xfmrEnd, cim.PowerTransformerEnd):
+                        rtpName = xfmrEnd.PowerTransformer.name
+                    elif isinstance(xfmrEnd, cim.TransformerTankEnd):
+                        rtpName = xfmrEnd.TransformerTank.name
+                    reg = self.dssContext.Transformers.First()
+                    while reg:
+                        if self.dssContext.Transformers.Name() == rtpName:
+                            break
+                        else:
+                            reg = self.dssContext.Transformers.Next()
+                    if reg:
+                        self.dssContext.Transformers.Wdg(2)
+                        if i == 0:
+                            oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
+                            newSetpointRatio[j] = oldSetpointRatio[j]
+                        minTapRatio = self.dssContext.Transformers.MinTap()
+                        rtpCurrentTap = newSetpointRatio[j]
+                        tapStep = float(rtp.step)
+                        if rtpCurrentTap <= minTapRatio:
+                            break
+                        self.dssContext.Transformers.Tap(rtpCurrentTap - tapStep)
+                        self.dssContext.Solution.SolveNoControl()
+                        converged = self.dssContext.Solution.Converged()
+                        if converged:
+                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                            if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                                print(f'modifying regulator {psr_mrid} did not cause a voltage violation.')
+                                if rtp.mRID not in return_dict.keys():
+                                    return_dict[rtp.mRID] = {
+                                        'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
+                                        'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
+                                        'object': rtp
+                                    }
+                                else:
+                                    return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(
+                                        rtpCurrentTap + tapStep, rtp)
+                                rtpCurrentTap = rtpCurrentTap + tapStep
+                                newSetpointRatio[j] = rtpCurrentTap
+                            else:
+                                stopDecrease[j] = True
+                                self.dssContext.Transformers.Tap(newSetpointRatio[j])
+                        else:
+                            self.dssContext.Transformers.Tap(newSetpointRatio[j])
+                            break
+        return return_dict
+
+    def increase_voltage_regulator(self, reg_list: list) -> dict:
+        tap_budget = 5
+        return_dict = {}
+        success = False
+        while reg_list and not success:
+            element_tuple = reg_list.pop(0)
+            psr_mrid = element_tuple[0]
+            phases = element_tuple[2]
+            oldSetpointRatio = [None] * len(element_tuple[1])
+            newSetpointRatio = [None] * len(element_tuple[1])
+            for i in range(tap_budget):
+                if success:
+                    break
+                for j in range(len(element_tuple[1])):
+                    rtp = element_tuple[1][j]
+                    rtpPhases = getRatioTapChangerPhases(rtp)
+                    if not (rtpPhases in phases or phases in rtpPhases):
+                        continue
+                    if success:
+                        break
+                    xfmrEnd = rtp.TransformerEnd
+                    rtpName = ''
+                    if isinstance(xfmrEnd, cim.PowerTransformerEnd):
+                        rtpName = xfmrEnd.PowerTransformer.name
+                    elif isinstance(xfmrEnd, cim.TransformerTankEnd):
+                        rtpName = xfmrEnd.TransformerTank.name
+                    reg = self.dssContext.Transformers.First()
+                    while reg:
+                        if self.dssContext.Transformers.Name() == rtpName:
+                            break
+                        else:
+                            reg = self.dssContext.Transformers.Next()
+                    if reg:
+                        self.dssContext.Transformers.Wdg(2)
+                        if i == 0:
+                            oldSetpointRatio[j] = self.dssContext.Transformers.Tap()
+                            newSetpointRatio[j] = oldSetpointRatio[j]
+                        maxTapRatio = self.dssContext.Transformers.MaxTap()
+                        rtpCurrentTap = newSetpointRatio[j]
+                        tapStep = float(rtp.step)
+                        if rtpCurrentTap >= maxTapRatio:
+                            break
+                        self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
+                        self.dssContext.Solution.SolveNoControl()
+                        converged = self.dssContext.Solution.Converged()
+                        if converged:
+                            print(f'Powerflow converged when modifying regulator {psr_mrid}.')
+                            if rtp.mRID not in return_dict.keys():
+                                return_dict[rtp.mRID] = {
+                                    'setpoint': tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp),
+                                    'old_setpoint': tapRatioToTapPosition(oldSetpointRatio[j], rtp),
+                                    'object': rtp
+                                }
+                            else:
+                                return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(rtpCurrentTap + tapStep, rtp)
+                            rtpCurrentTap = rtpCurrentTap + tapStep
+                            newSetpointRatio[j] = rtpCurrentTap
+                            if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                                print(f'Voltage violations were eliminated when modifying regulator {psr_mrid}.')
+                                success = True
+                                break
+                        else:
+                            self.dssContext.Transformers.Tap(rtpCurrentTap)
+                            break
+        return return_dict
+
+    def reg_openDSS_to_CIMHub(self, turnsRatio):
+        return turnsRatio
+
     def send_setpoints(self):
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
@@ -506,21 +709,11 @@ class ConservationVoltageReductionController(object):
             if isinstance(cimObj, cim.LinearShuntCompensator):
                 self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
                                                       int(not newSetpoint[0]))
-            elif isinstance(cimObj, cim.PowerTransformer):
-                tapChangersList = self.controllable_regulators.get(mrid, {}).get('RatioTapChangers', [])
-                currentTapPositions = self.pos_measurements.get(mrid, {})
+            elif isinstance(cimObj, cim.RatioTapChanger):
+                tapChangersList = self.controllable_regulators.get(cim.PowerTransformer.mRID,
+                                                                   {}).get('RatioTapChangers', [])
                 for rtp in tapChangersList:
-                    phases = rtp.TransformerEnd.phases
-                    for measurement_object in currentTapPositions.get('measurement_objects', {}).values():
-                        if measurement_object.phases == phases:
-                            currentSetpoint = currentTapPositions.get('measurement_values',
-                                                                      {}).get(measurement_object.mRID, {}).get('value')
-                            if not currentSetpoint:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, 'NA')
-                            else:
-                                self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint,
-                                                                      currentSetpoint)
-                            break
+                    self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
             else:
                 self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
                                  f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
@@ -536,6 +729,112 @@ class ConservationVoltageReductionController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def findPrimaryPhase(cimObj):
+    '''
+        Helper function for finding the primary phase an instance of cim.ConductingEquipment on the secondary
+        system is connected to.
+    '''
+    if not isinstance(cimObj, cim.ConductingEquipment):
+        raise TypeError('findPrimaryPhase(): cimObj must be an instance of cim.ConductingEquipment!')
+    equipmentToCheck = [cimObj]
+    phaseCode = None
+    xfmr = None
+    i = 0
+    while not xfmr and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            if isinstance(eq, cim.PowerTransformer):
+                xfmr = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not xfmr:
+        raise RuntimeError('findPrimaryPhase(): no upstream centertapped transformer could be found for secondary '
+                           f'system object {cimObj.name}!')
+    for tank in xfmr.TransformerTanks:
+        if phaseCode is not None:
+            break
+        for tankEnd in tank.TransformerTankEnds:
+            if tankEnd.phases not in [
+                    cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
+                    cim.PhaseCode.s2, cim.PhaseCode.s2N
+            ]:
+                phaseCode = tankEnd.phases
+                break
+    if not phaseCode:
+        raise RuntimeError('findPrimaryPhase(): the upstream centertapped transformer has no primary phase defined!?')
+    return phaseCode
+
+
+def getRatioTapChangerPhases(ratioTapChanger) -> str:
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('getRatioTapChanger(): Argument ratioTapChanger must be an instance of cim.RatioTapChanger!')
+    phases = None
+    transformerEnd = ratioTapChanger.TransformerEnd
+    if isinstance(transformerEnd, cim.PowerTransformerEnd):
+        phases = cim.PhaseCode.ABC.value
+    elif isinstance(transformerEnd, cim.TransformerTankEnd):
+        phases = transformerEnd.phases.value
+    if phases is None:
+        raise ValueError('getRatioTapChanger(): The TransformerEnd associated with the RatioTapChanger is expected to '
+                         'be an instance of PowerTransformerEnd or TransformerTankEnd!')
+    return phases
+
+
+def tapPositionToTapRatio(tapPosition: int, ratioTapChanger) -> float:
+    '''Converts integer tap position to a pu turns ratio for a given cim.RatioTapChanger instance'''
+    if not isinstance(tapPosition, int):
+        raise TypeError('tapPositionToTapRatio(): tapPosition must be an int.')
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('tapPositionToTapRatio(): ratioTapChanger must be a cim.RatioTapChanger.')
+    maxTapPosition = int(ratioTapChanger.highStep)
+    minTapPosition = int(ratioTapChanger.lowStep)
+    neutralTapPosition = int(ratioTapChanger.nuetralStep)
+    stepRatio = float(ratioTapChanger.step)
+    if tapPosition > maxTapPosition or tapPosition < minTapPosition:
+        raise ValueError('tapPostionToTapRatio(): tapPosition must be within the maximum and minimum tap positions of '
+                         'the ratioTapChanger!')
+    if neutralTapPosition is None:
+        neutralTapPosition = 0
+    tapPostionRatio = 1.0 + (float(tapPosition - neutralTapPosition) * stepRatio)
+    return tapPostionRatio
+
+
+def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
+    '''Converts pu turn ratio tap setting to an integer tap position for a given cim.RatioTapChanger instance'''
+    if not isinstance(tapPositionRatio, float):
+        raise TypeError('tapRatioToTapPosition(): tapPositionRatio must be a float.')
+    if not isinstance(ratioTapChanger, cim.RatioTapChanger):
+        raise TypeError('tapRatioToTapPosition(): ratioTapChanger must be a cim.RatioTapChanger.')
+    maxTapPosition = int(ratioTapChanger.highStep)
+    minTapPosition = int(ratioTapChanger.lowStep)
+    neutralTapPosition = int(ratioTapChanger.nuetralStep)
+    stepRatio = float(ratioTapChanger.step)
+    if tapPositionRatio > tapPositionToTapRatio(maxTapPosition,
+                                                ratioTapChanger) or tapPositionRatio < tapPositionToTapRatio(
+                                                    minTapPosition, ratioTapChanger):
+        raise ValueError('tapRatioToTapPosition(): tapPositionRatio must be within the maximum and minimum tap '
+                         'positions of the ratioTapChanger!')
+    if neutralTapPosition is None:
+        neutralTapPosition = 0
+    tapPosition = math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5) + neutralTapPosition
+    if tapPosition > maxTapPosition:
+        tapPosition = maxTapPosition
+    elif tapPosition < minTapPosition:
+        tapPosition = minTapPosition
+    return tapPosition
 
 
 def buildGraphModel(mrid: str) -> FeederModel:
@@ -596,14 +895,15 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    start_time = 1726081200  # 9/11/2024 12:00:00 PDT
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
-    #   duration=f'{24*3600}',
-        duration=120,
+        # duration=f'{24*3600}',
+        duration=121,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=False)
+        pause_after_measurements=True)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -631,6 +931,19 @@ def removeDirectory(directory: Path | str):
         else:
             item.unlink()
     directory.rmdir()
+
+
+def add_data_to_csv(file_path, data, header=None):
+    # Check if the file exists
+    file_exists = os.path.isfile(file_path)
+    # Open the CSV file in append mode (or create it if it doesn't exist)
+    with open(file_path, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # If the file doesn't exist, write the header first
+        if not file_exists and header:
+            writer.writerow(header)
+        # Write the data (a list or tuple representing a row)
+        writer.writerow(data)
 
 
 def main(control_enabled: bool, start_simulations: bool, model_id: str = None):

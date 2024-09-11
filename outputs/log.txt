@@ -1,0 +1,21 @@
+INFO:cimgraph.models.graph_model:no instances of WireSpacingInfo found in graph.
+INFO:cimgraph.models.graph_model:no instances of WirePosition found in graph.
+INFO:cimgraph.models.graph_model:no instances of OverheadWireInfo found in graph.
+INFO:cimgraph.models.graph_model:no instances of ConcentricNeutralCableInfo found in graph.
+INFO:cimgraph.models.graph_model:no instances of TapeShieldCableInfo found in graph.
+INFO:cimgraph.models.graph_model:no instances of TransformerStarImpedance found in graph.
+INFO:cimgraph.models.graph_model:no instances of TapChanger found in graph.
+INFO:cimgraph.models.graph_model:no instances of TapChangerInfo found in graph.
+INFO:cimgraph.models.graph_model:no instances of ConformLoad found in graph.
+INFO:cimgraph.models.graph_model:no instances of NonConformLoad found in graph.
+INFO:cimgraph.models.graph_model:no instances of PowerCutZone found in graph.
+INFO:cimgraph.models.graph_model:no instances of ThermostatController found in graph.
+INFO:cimgraph.models.graph_model:no instances of BatteryUnit found in graph.
+INFO:cimgraph.models.graph_model:no instances of PowerElectronicsWindUnit found in graph.
+INFO:cimgraph.models.graph_model:no instances of ActivePowerLimit found in graph.
+INFO:cimgraph.models.graph_model:no instances of ApparentPowerLimit found in graph.
+INFO:cimgraph.models.graph_model:no instances of CoordinateSystem found in graph.
+INFO:cimgraph.models.graph_model:no instances of Measurement found in graph.
+INFO:cimgraph.models.graph_model:no instances of Measurement found in graph.
+DEBUG:gridappsd.simulation:Running simulation in loop until simulation is done.
+DEBUG:gridappsd.simulation:Simulation completed

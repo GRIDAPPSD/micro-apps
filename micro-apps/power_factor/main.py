@@ -1,4 +1,5 @@
 import os
+import json
 import traceback
 import logging
 from pprint import pprint
@@ -56,7 +57,7 @@ def remap_phases(
 
 def dist_matrix(ders: dict, dists: dict) -> np.ndarray:
     phases = 3
-    map = [dists[bus] for der, bus in ders.items()]
+    map = [1/(1+dists[bus]) for der, bus in ders.items()]
     map = map / np.linalg.norm(map)
     mat = np.array([map,]*phases).transpose()
     return mat
@@ -68,6 +69,11 @@ def dict_to_array(d: dict) -> np.ndarray:
     return np.array(data)
 
 
+def save_data(results: models.DataInfo,  filename: str) -> None:
+    with open(f"{OUT_DIR}/{filename}.json", "w") as f:
+        f.write(json.dumps(asdict(results)))
+
+
 class PowerFactor(object):
     gapps: GridAPPSD
     sim: Simulation
@@ -76,48 +82,61 @@ class PowerFactor(object):
     consumers: models.Consumers
     electronics: models.PowerElectronics
     source_mrid: str
+    data_info: models.DataInfo
 
     def __init__(self, gapps: GridAPPSD, sim: Simulation, network: cimgraph.GraphModel):
         self.gapps = gapps
         self.switches = query.get_switches(network)
-        pprint(self.switches)
-        log.debug(self.switches)
         self.compensators = query.get_compensators(network)
-        log.debug(self.compensators)
         self.consumers = query.get_consumers(network)
-        log.debug(self.consumers)
         self.electronics = query.get_power_electronics(network)
-        log.debug(self.electronics)
         self.tranformers = query.get_Transformers(network)
-        log.debug(self.tranformers)
+        self.data_info = models.DataInfo()
+
+        self.data_info.compensators_ratings = self.compensators.ratings
+        self.data_info.pecs_ratings = self.electronics.ratings
         self.temp_source_bus = ["_9d721fcc-7229-42f5-b2e2-d9b0a8adecfd",
                                 "_81930576-6f0d-4c4f-a857-8e359b5210cd", "_425640dd-811d-483f-9675-03d9b516b7f8"]
 
         (graph, source_bus, mrid) = query.generate_graph(network)
         self.source_mrid = mrid
         paths = nx.shortest_path_length(graph, source=source_bus)
-        self.dist = dist_matrix(query.map_power_electronics(network), paths)
+        pec_map = query.map_power_electronics(network)
+        self.dist = dist_matrix(pec_map, paths)
+        self.data_info.pecs_distance = {k: (1/v[0]) - 1
+                                        for k, v in zip(pec_map.keys(), self.dist)}
 
         sim.add_onmeasurement_callback(self.on_measurement)
         self.diff_builder = DifferenceBuilder(sim.simulation_id)
         self.topic = t.simulation_input_topic(sim.simulation_id)
         self.last_dispatch = 0
 
+        # self.init_electronics()
+
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
-        if timestamp - self.last_dispatch >= 10:
+        print(f"{timestamp}: on_measurement")
+        if timestamp - self.last_dispatch >= 6:
+
+            pecs = {key: models.PhasePower()
+                    for key in self.electronics.ratings.keys()}
+
+            self.data_info.data.append(models.Data(
+                timestamp=timestamp,
+                total_load=models.PhasePower(),
+                net_load=models.PhasePower(),
+                pec_dispatch=models.PhasePower(),
+                pecs=pecs
+            ))
             self.last_dispatch = timestamp
             control = self.dispatch()
             print("Total Reactive PECS: ", np.sum(control, axis=0))
             self.set_electronics(control)
 
-        print(f"{timestamp}: on_measurement")
-        if self.source_mrid in self.tranformers.measurements_va:
-            print("SOURCE: ",
-                  self.tranformers.measurements_va[self.source_mrid])
-
         for k, v in measurements.items():
             if k in self.temp_source_bus:
-                print("SOURCE: ", k, v)
+                pass
+                # print("SOURCE: ", k, v)
+
             if k in self.switches.measurement_map:
                 val = models.SimulationMeasurement(**v)
                 if val.value is not None:
@@ -213,12 +232,19 @@ class PowerFactor(object):
 
         topic = t.simulation_input_topic(sim.simulation_id)
         message = self.diff_builder.get_message()
-        log.debug(message)
-        self.gapps.send(topic, message)
+        # self.gapps.send(topic, message)
 
     def set_compensators(self) -> np.ndarray:
-        loads = dict_to_array(self.consumers.measurements_va)[:, :, 1]
-        total_load = np.sum(loads, axis=0)
+        real_loads = dict_to_array(self.consumers.measurements_va)[:, :, 0]
+        total_real = np.sum(real_loads, axis=0).tolist()
+
+        imag_loads = dict_to_array(self.consumers.measurements_va)[:, :, 1]
+        total_imag = np.sum(imag_loads, axis=0).tolist()
+
+        starting_load = np.sum(imag_loads, axis=0)
+        total_load = np.sum(imag_loads, axis=0)
+
+        self.data_info.data[-1].total_load.set_phases(total_real, total_imag)
 
         comps_abc = {k: v for k, v in self.compensators.ratings.items()
                      if v.a.imag != 0 and v.b.imag != 0 and v.c.imag != 0}
@@ -283,23 +309,39 @@ class PowerFactor(object):
 
         topic = t.simulation_input_topic(sim.simulation_id)
         message = self.diff_builder.get_message()
-        log.debug(message)
-        self.gapps.send(topic, message)
-        return net
+        # self.gapps.send(topic, message)
+        net = starting_load - total_load
+        self.data_info.data[-1].net_load.set_phases(
+            total_real, net.tolist())
+        return total_load
 
-    def set_electronics(self, dispatch: np.ndarray) -> None:
+    def init_electronics(self) -> None:
         for idx, key in enumerate(self.electronics.ratings.keys()):
             mrid = self.electronics.units[key]
-            print(idx, key, mrid, np.sum(dispatch[idx]))
             self.diff_builder.add_difference(
-                mrid, models.PowerElectronics.q_attribute,
-                np.sum(dispatch[idx]), 0.0
+                mrid, models.PowerElectronics.p_attribute, 0.0, 0.0
             )
-
         topic = t.simulation_input_topic(sim.simulation_id)
         message = self.diff_builder.get_message()
-        log.debug(message)
-        self.gapps.send(topic, message)
+        # self.gapps.send(topic, message)
+
+    def set_electronics(self, dispatch: np.ndarray) -> None:
+        real = dict_to_array(self.electronics.measurements_va)[:, :, 0]
+        total_real = np.sum(real, axis=0)
+        total_imag = np.sum(dispatch, axis=0)
+        self.data_info.data[-1].pec_dispatch.set_phases(total_real, total_imag)
+
+        for idx, key in enumerate(self.electronics.ratings.keys()):
+            mrid = self.electronics.units[key]
+            self.data_info.data[-1].pecs[key].set_phases(
+                real[idx], dispatch[idx].tolist())
+            value = np.sum(dispatch[idx]).item()
+            self.diff_builder.add_difference(
+                mrid, models.PowerElectronics.q_attribute, value, 0.0
+            )
+        topic = t.simulation_input_topic(sim.simulation_id)
+        message = self.diff_builder.get_message()
+        # self.gapps.send(topic, message)
 
     def get_phase_vars(self) -> np.ndarray:
         load = dict_to_array(self.consumers.measurements_va)[:, :, 1]
@@ -316,6 +358,7 @@ class PowerFactor(object):
     def get_bounds(self) -> np.ndarray:
         apparent = dict_to_array(self.electronics.ratings)[:, :, 0]
         real = dict_to_array(self.electronics.measurements_va)[:, :, 0]
+        total_real = np.sum(real, axis=0).tolist()
         print("Total Apparent PECS: ", np.sum(apparent, axis=0))
         print("Total Real PECS: ", np.sum(real, axis=0))
         reactive = np.sqrt(abs(real**2 - apparent**2))
@@ -350,8 +393,6 @@ class PowerFactor(object):
 
         if prob.status == 'optimal':
             return np.round(x.value, 0)
-
-        print(prob.status)
 
         return np.zeros_like(x)
 
@@ -408,7 +449,7 @@ if __name__ == "__main__":
 
         model_config = ModelCreationConfig(
             load_scaling_factor=1,
-            schedule_name="",
+            schedule_name="ieeezipload",
             z_fraction=0,
             i_fraction=1,
             p_fraction=0,
@@ -418,7 +459,7 @@ if __name__ == "__main__":
 
         start = datetime(2023, 1, 1, 4)
         epoch = datetime.timestamp(start)
-        duration = timedelta(seconds=60).total_seconds()
+        duration = timedelta(hours=24).total_seconds()
 
         sim_args = SimulationArgs(
             start_time=epoch,
@@ -426,7 +467,7 @@ if __name__ == "__main__":
             simulator="GridLAB-D",
             timestep_frequency=1000,
             timestep_increment=1000,
-            run_realtime=True,
+            run_realtime=False,
             simulation_name=system.modelName,
             power_flow_solver_method="NR",
             model_creation_config=asdict(model_config)
@@ -441,6 +482,8 @@ if __name__ == "__main__":
         app = PowerFactor(gapps, sim, network)
 
         sim.run_loop()
+
+        save_data(app.data_info, "summary")
 
     except KeyboardInterrupt:
         sim.stop()

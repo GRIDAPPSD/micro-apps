@@ -1,6 +1,7 @@
 import time
 import os
 import math
+from cmath import exp
 from pprint import pprint
 # import networkx as nx
 # import numpy as np
@@ -17,6 +18,7 @@ from cimgraph import utils
 from tabulate import tabulate
 from cimgraph.databases import ConnectionParameters, BlazegraphConnection
 from cimgraph.models import FeederModel
+import cimgraph.data_profile.rc4_2021 as cim
 from cimgraph.data_profile.rc4_2021 import EnergyConsumer
 from cimgraph.data_profile.rc4_2021 import BatteryUnit
 from cimgraph.data_profile.rc4_2021 import PowerElectronicsConnection
@@ -28,11 +30,18 @@ from gridappsd.simulation import SimulationArgs
 from gridappsd.simulation import ModelCreationConfig
 from gridappsd import topics as t
 import csv
+from pathlib import Path
 
-IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
+# IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
 IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
 IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
 IEEE123PV = "_A3BC35AA-01F6-478E-A7B1-8EA4598A685C"
+IEEE123_APPS = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
+ieee123_apps_feeder_head_measurement_mrids = [
+    "_903a0e85-6a11-4b8e-82cf-163376df7764",
+    "_6d82c9d9-5f99-4356-8a8d-acda9cd6f17b",
+    "_971765b5-da69-4ea8-a0cb-d2b9613b8ee3"
+]
 SOURCE_BUS = '150r'
 OUT_DIR = "outputs"
 ROOT = os.getcwd()
@@ -135,16 +144,73 @@ class CarbonManagementApp(object):
 
         if self.has_energy_consumers:
             self._collect_energy_consumers(network)
-
+        self.network = network
         simulation.add_onmeasurement_callback(self.on_measurement)
-        # simulation.start_simulation()
+        # data output
+        out_dir = Path(__file__).parent/"output"
+        feeder = network.graph.get(cim.Feeder, {}).get(model_id)
+        self.model_results_path = out_dir/feeder.name
+        self.model_results_path.mkdir(parents=True, exist_ok=True)
+        # self.findFeederHeadLoadMeasurements()
+        self.init_output_file()
+
+    def init_output_file(self):
+        for child in self.model_results_path.iterdir():
+            child.unlink()
+        with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "voltage"]
+            writer.writerow(header)
+        with open(self.model_results_path / "total_load.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "phase", "p", "q"]
+            writer.writerow(header)
+        with open(self.model_results_path / "optimization_summary.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "load_pv_a", "load_pv_b", "load_pv_c", "load_pv_batt_a", "load_pv_batt_b", "load_pv_batt_c", "status"]
+            writer.writerow(header)
+        with open(self.model_results_path / "optimization_result.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "battery", "phases", "p_batt"]
+            writer.writerow(header)
+        with open(self.model_results_path / "simulation_table.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header=["time","battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+            writer.writerow(header)
+
+    def get_feeder_head_measurements(self, measurements):
+        total_loads = {}
+        if self.network.container.mRID == IEEE123_APPS:
+            for mrid in ieee123_apps_feeder_head_measurement_mrids:
+                phase = self.network.graph.get(cim.Analog, {}).get(mrid).phases.value
+                s_magnitude = measurements.get(mrid).get("magnitude")
+                s_angle_rad = measurements.get(mrid).get("angle")
+                total_loads[phase] = s_magnitude*exp(1j*s_angle_rad)
+        return total_loads
+
+    def save_total_load_data(self, time, total_loads):
+        file_path = self.model_results_path/"total_load.csv"
+        header = ["time", "phase", "p", "q"]
+        for phase, load in total_loads.items():
+            data = [time, phase, load.real, load.imag]
+            add_data_to_csv(file_path, data, header=header)
+
+    def save_voltage_data(self, time):
+        file_path = self.model_results_path/"voltages.csv"
+        header = ["time", "mrid", "node", "phase", "voltage"]
+        for mrid in self.pnv_measurements.keys():
+            v = self.pnv_measurements_pu[mrid]
+            phase = self.pnv_measurements[mrid]["measurement_object"].phases.value
+            node = self.pnv_measurements[mrid]["measurement_object"].Terminal.ConnectivityNode.name
+            if v is not None:
+                data = [time, mrid, node, phase, v]
+                add_data_to_csv(file_path, data, header=header)
 
     def _collect_power_electronic_devices(self, network):
-        for pec in network.graph[PowerElectronicsConnection].values():
+        for pec in network.graph.get(PowerElectronicsConnection, {}).values():
             # inv_mrid = pec.mRID
             for unit in pec.PowerElectronicsUnit:
                 unit_mrid = unit.mRID
-                print(type(unit))
                 if isinstance(unit, BatteryUnit):
                     self.Battery[unit_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
                                                'measurementPhases': []}
@@ -184,7 +250,7 @@ class CarbonManagementApp(object):
                         self.Solar[unit_mrid]['measurementPhases'].append(measurement.phases.value)
 
     def _collect_energy_consumers(self, network):
-        for ld in network.graph[EnergyConsumer].values():
+        for ld in network.graph.get(EnergyConsumer, {}).values():
             ld_mrid = ld.mRID
             self.EnergyConsumer[ld_mrid] = {'phases': [], 'measurementType': [], 'measurementmRID': [],
                                             'measurementPhases': []}
@@ -370,7 +436,7 @@ class CarbonManagementApp(object):
             optimization_solution_table.append([name, self.Battery[batt]['phases'], p_batt[idx].value])
             data = [timestamp, name, self.Battery[batt]['phases'], p_batt[idx].value]
             header = ["time", "battery", "phases", "p_batt"]
-            add_data_to_csv("optimization_result.csv", data, header=header)
+            add_data_to_csv(self.model_results_path/"optimization_result.csv", data, header=header)
             idx += 1
         print('Optimization Solution')
         print(tabulate(optimization_solution_table, headers=['Battery', 'phases', 'P_batt (kW)'], tablefmt='psql'))
@@ -385,11 +451,13 @@ class CarbonManagementApp(object):
         data.extend(load_pv_batt)
         data.append(problem.status)
         header = ["time", "load_pv_a", "load_pv_b", "load_pv_c", "load_pv_batt_a", "load_pv_batt_b", "load_pv_batt_c", "status"]
-        add_data_to_csv("optimization_summary.csv", data, header=header)
+        add_data_to_csv(self.model_results_path/"optimization_summary.csv", data, header=header)
         print(tabulate(optimization_summary, headers=['Load+PV (kW)', 'Load+PV+Batt (kW)', 'Status'], tablefmt='psql'))
         return dispatch_batteries
 
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
+        total_loads = self.get_feeder_head_measurements(measurements)
+        self.save_total_load_data(timestamp, total_loads)
         if not self.has_batteries:
             return
         if self._count % 10 == 0:
@@ -409,7 +477,7 @@ class CarbonManagementApp(object):
                 data.extend(self.Battery[batt]['P_inj'])
                 data.extend([self.Battery[batt]['soc']])
                 header=["time","battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
-                add_data_to_csv("simulation_table.csv", data, header=header)
+                add_data_to_csv(self.model_results_path/"simulation_table.csv", data, header=header)
             print(f'\n.......Curren timestamp: {timestamp}.......\n')
             print('Simulation Table')
             print(tabulate(simulation_table_batteries, headers=['Battery', 'phases', 'P_batt (kW)', 'SOC'],

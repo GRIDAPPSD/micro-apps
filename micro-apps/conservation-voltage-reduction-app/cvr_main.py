@@ -3,6 +3,7 @@ import math
 import os
 from argparse import ArgumentParser
 from datetime import datetime
+from pickle import FALSE
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -17,10 +18,54 @@ from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
 import csv
 from pathlib import Path
-cim = None
+import cimgraph.data_profile.rc4_2021 as cim
+from cmath import exp
+# cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
+ieee123_apps_mrid = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
+ieee123_apps_feeder_head_measurement_mrids = [
+    "_903a0e85-6a11-4b8e-82cf-163376df7764",
+    "_6d82c9d9-5f99-4356-8a8d-acda9cd6f17b",
+    "_971765b5-da69-4ea8-a0cb-d2b9613b8ee3"
+]
 
+
+def findFeederTransformer(cimObj):
+    '''
+        Helper function to find feeder transformer
+    '''
+    if not isinstance(cimObj, cim.EnergySource):
+        raise TypeError('findFeederTransformer(): cimObj must be an instance of cim.EnergySource!')
+    equipmentToCheck = [cimObj]
+    xfmr = None
+    feederPowerRating = None
+    i = 0
+    while not xfmr and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            if isinstance(eq, cim.PowerTransformer):
+                xfmr = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not xfmr:
+        raise RuntimeError('findFeederPowerRating(): No feeder head transformer could be found for EnergySource, '
+                           f'{cimObj.name}!')
+    powerTransformerEnds = xfmr.PowerTransformerEnd
+    if not powerTransformerEnds:
+        raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
+    return xfmr
 
 class ConservationVoltageReductionController(object):
     """CVR Control Class
@@ -118,6 +163,8 @@ class ConservationVoltageReductionController(object):
         self.pnv_measurements_pu = {}
         self.va_measurements = {}
         self.pos_measurements = {}
+        self.link_measurements = {}
+        self.source_measurements = {}
         if period is None:
             self.period = ConservationVoltageReductionController.period
         else:
@@ -150,6 +197,15 @@ class ConservationVoltageReductionController(object):
             self.setpoints_topic = topics.field_input_topic()
         # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
         self.graph_model = buildGraphModel(model_id)
+        print("source bus")
+        energy_sources = self.graph_model.graph.get(cim.EnergySource, {})
+        for source_mrid, source in energy_sources.items():
+            self.source = source
+            print(source_mrid)
+            terminals = source.Terminals
+            self.source_bus = terminals[0].ConnectivityNode
+            self.source_mrid = terminals[0].ConnectivityNode.mRID
+            print(self.source_bus.name)
         # Store controllable_capacitors
         self.controllable_capacitors = self.graph_model.graph.get(cim.LinearShuntCompensator, {})
         # print(self.controllable_capacitors.keys())
@@ -183,6 +239,14 @@ class ConservationVoltageReductionController(object):
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
                             transformerTank.name
+        self.source_device = None
+        for terminal in self.source_bus.Terminals:
+            for measurement in terminal.Measurements:
+                if measurement.measurementType == "VA":
+                    mrid = measurement.mRID
+                    phase = measurement.phases.value
+                    self.source_measurements[phase] = {'measurement_object': measurement, 'measurement_value': None}
+                    pass
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
@@ -190,7 +254,6 @@ class ConservationVoltageReductionController(object):
         measurements.update(self.graph_model.graph.get(cim.Analog, {}))
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
 
-        # print(measurements.keys())
         for meas in measurements.values():
             if meas.measurementType == 'PNV':    # it's a voltage measurement. store it.
                 mrid = meas.mRID
@@ -202,6 +265,12 @@ class ConservationVoltageReductionController(object):
                         self.va_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
                     self.va_measurements[mrid]['measurement_objects'][meas.mRID] = meas
                     self.va_measurements[mrid]['measurement_values'][meas.mRID] = None
+                if isinstance(meas.PowerSystemResource, (cim.ACLineSegment, cim.PowerTransformer)):
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.va_measurements.keys():
+                        self.link_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.link_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.link_measurements[mrid]['measurement_values'][meas.mRID] = None
             elif meas.measurementType == 'Pos':    # it's a positional measurement.
                 if isinstance(meas.PowerSystemResource, (cim.Switch, cim.PowerTransformer, cim.LinearShuntCompensator)):
                     mrid = meas.PowerSystemResource.mRID
@@ -223,16 +292,42 @@ class ConservationVoltageReductionController(object):
         feeder = self.graph_model.graph.get(cim.Feeder, {}).get(self.model_id)
         self.model_results_path = out_dir/feeder.name
         self.model_results_path.mkdir(parents=True, exist_ok=True)
-        print(self.model_results_path.resolve())
+        # self.findFeederHeadLoadMeasurements()
+        self.init_output_file()
+
+
+    def init_output_file(self):
         for child in self.model_results_path.iterdir():
             child.unlink()
         with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
             header = ["time", "mrid", "node", "phase", "voltage"]
             writer.writerow(header)
+        with open(self.model_results_path / "total_load.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "phase", "p", "q"]
+            writer.writerow(header)
+
+    def get_feeder_head_measurements(self, measurements):
+        total_loads = {}
+        if self.graph_model.container.mRID == ieee123_apps_mrid:
+            for mrid in ieee123_apps_feeder_head_measurement_mrids:
+                phase = self.graph_model.graph.get(cim.Analog, {}).get(mrid).phases.value
+                s_magnitude = measurements.get(mrid).get("magnitude")
+                s_angle_rad = measurements.get(mrid).get("angle")
+                total_loads[phase] = s_magnitude*exp(1j*s_angle_rad)
+        return total_loads
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
         self.desired_setpoints.clear()
+        self.log.info(f"entering on_measurement with timestamp={timestamp}")
+        total_loads = self.get_feeder_head_measurements(measurements)
+        self.save_total_load_data(timestamp, total_loads)
+        for mrid in self.link_measurements.keys():
+            meas = measurements.get(mrid)
+            if meas is not None:
+                self.link_measurements[mrid]['measurement_value'] = meas
+                print(meas)
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
@@ -329,6 +424,13 @@ class ConservationVoltageReductionController(object):
                 continue
             self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
 
+    def save_total_load_data(self, time, total_loads):
+        file_path = self.model_results_path/"total_load.csv"
+        header = ["time", "phase", "p", "q"]
+        for phase, load in total_loads.items():
+            data = [time, phase, load.real, load.imag]
+            add_data_to_csv(file_path, data, header=header)
+
     def save_voltage_data(self, time):
         file_path = self.model_results_path/"voltages.csv"
         header = ["time", "mrid", "node", "phase", "voltage"]
@@ -339,7 +441,6 @@ class ConservationVoltageReductionController(object):
             if v is not None:
                 data = [time, mrid, node, phase, v]
                 add_data_to_csv(file_path, data, header=header)
-
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -895,15 +996,15 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
-    start_time = 1726081200  # 9/11/2024 12:00:00 PDT
+    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    # start_time = 1726081200  # 9/11/2024 12:00:00 PDT
     sim_args = SimulationArgs(
         start_time=f'{start_time}',
-        # duration=f'{24*3600}',
-        duration=121,
+        duration=f'{900}',
+        # duration=60*60,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=True)
+        pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -954,10 +1055,11 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     if not isinstance(model_id, str) and model_id is not None:
         raise TypeError(
             f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
-    global cim, DB_CONNECTION
+    # global cim, DB_CONNECTION
+    global DB_CONNECTION
     cim_profile = 'rc4_2021'
     iec61970_301 = 7
-    cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
+    # cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
     # params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
     # DB_CONNECTION = GridappsdConnection(params)
     params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
@@ -1078,3 +1180,4 @@ if __name__ == '__main__':
                         help='Flag to disable control on startup by default.')
     args = parser.parse_args()
     main(args.disable_control, args.start_simulations, args.model_id)
+

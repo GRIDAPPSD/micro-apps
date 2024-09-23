@@ -9,8 +9,8 @@ INFO:cimgraph.models.graph_model:no instances of TapChangerInfo found in graph.
 INFO:cimgraph.models.graph_model:no instances of ConformLoad found in graph.
 INFO:cimgraph.models.graph_model:no instances of NonConformLoad found in graph.
 INFO:cimgraph.models.graph_model:no instances of PowerCutZone found in graph.
+INFO:cimgraph.models.graph_model:no instances of House found in graph.
 INFO:cimgraph.models.graph_model:no instances of ThermostatController found in graph.
-INFO:cimgraph.models.graph_model:no instances of BatteryUnit found in graph.
 INFO:cimgraph.models.graph_model:no instances of PowerElectronicsWindUnit found in graph.
 INFO:cimgraph.models.graph_model:no instances of ActivePowerLimit found in graph.
 INFO:cimgraph.models.graph_model:no instances of ApparentPowerLimit found in graph.

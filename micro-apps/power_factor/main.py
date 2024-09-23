@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 import cvxpy as cp
 import importlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 import cimgraph.utils
 from cimgraph.databases import ConnectionParameters
@@ -27,7 +27,7 @@ from gridappsd import topics as t
 import models
 import query
 
-IEEE123_APPS = "_E3D03A27-B988-4D79-BFAB-F9D37FB289F7"
+IEEE123_APPS = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
 IEEE13 = "_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62"
 IEEE123 = "_C1C3E687-6FFD-C753-582B-632A27E28507"
 IEEE123PV = "_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"
@@ -116,17 +116,22 @@ class PowerFactor(object):
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
         print(f"{timestamp}: on_measurement")
         if timestamp - self.last_dispatch >= 6:
-
             pecs = {key: models.PhasePower()
                     for key in self.electronics.ratings.keys()}
+
+            comps = {key: models.PhasePower()
+                     for key in self.compensators.ratings.keys()}
 
             self.data_info.data.append(models.Data(
                 timestamp=timestamp,
                 total_load=models.PhasePower(),
                 net_load=models.PhasePower(),
                 pec_dispatch=models.PhasePower(),
-                pecs=pecs
+                comp_dispatch=models.PhasePower(),
+                pecs=pecs,
+                compensators=comps
             ))
+
             self.last_dispatch = timestamp
             control = self.dispatch()
             print("Total Reactive PECS: ", np.sum(control, axis=0))
@@ -134,8 +139,8 @@ class PowerFactor(object):
 
         for k, v in measurements.items():
             if k in self.temp_source_bus:
+                print("SOURCE: ", k, v)
                 pass
-                # print("SOURCE: ", k, v)
 
             if k in self.switches.measurement_map:
                 val = models.SimulationMeasurement(**v)
@@ -263,6 +268,8 @@ class PowerFactor(object):
                     k, models.Compensators.sections_attribute, 0, 1
                 )
             else:
+                self.data_info.data[-1].compensators[k].set_phases(
+                    [], vars.tolist())
                 self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
@@ -276,6 +283,8 @@ class PowerFactor(object):
                     k, models.Compensators.sections_attribute, 0, 1
                 )
             else:
+                self.data_info.data[-1].compensators[k].set_phases(
+                    [], vars.tolist())
                 self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
@@ -289,6 +298,8 @@ class PowerFactor(object):
                     k, models.Compensators.sections_attribute, 0, 1
                 )
             else:
+                self.data_info.data[-1].compensators[k].set_phases(
+                    [], vars.tolist())
                 self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
@@ -302,6 +313,8 @@ class PowerFactor(object):
                     k, models.Compensators.sections_attribute, 0, 1
                 )
             else:
+                self.data_info.data[-1].compensators[k].set_phases(
+                    [], vars.tolist())
                 self.diff_builder.add_difference(
                     k, models.Compensators.sections_attribute, 1, 0
                 )
@@ -311,8 +324,11 @@ class PowerFactor(object):
         message = self.diff_builder.get_message()
         # self.gapps.send(topic, message)
         net = starting_load - total_load
+        self.data_info.data[-1].comp_dispatch.set_phases([], net)
         self.data_info.data[-1].net_load.set_phases(
             total_real, net.tolist())
+        print("Total consumers: ", starting_load)
+        print("Total compensators: ", net)
         return total_load
 
     def init_electronics(self) -> None:
@@ -349,9 +365,6 @@ class PowerFactor(object):
 
         comp = dict_to_array(self.compensators.measurements_va)[:, :, 1]
         total_comp = np.sum(comp, axis=0)
-
-        print("Total consumers: ", total_load)
-        print("Total compensators: ", total_comp)
 
         return total_load + total_comp
 
@@ -413,7 +426,7 @@ if __name__ == "__main__":
     try:
         cim_profile = 'rc4_2021'
         cim = importlib.import_module('cimgraph.data_profile.' + cim_profile)
-        mrid = IEEE123PV
+        mrid = IEEE123_APPS
 
         feeder = cim.Feeder(mRID=mrid)
 
@@ -457,7 +470,7 @@ if __name__ == "__main__":
             use_houses=False
         )
 
-        start = datetime(2023, 1, 1, 4)
+        start = datetime(2023, 1, 1, 0, tzinfo=timezone.utc)
         epoch = datetime.timestamp(start)
         duration = timedelta(hours=24).total_seconds()
 

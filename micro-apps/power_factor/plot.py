@@ -35,6 +35,34 @@ def extract_imag(data: list[PhasePower]) -> (list[float], list[float], list[floa
     return (a, b, c)
 
 
+def extract_comps_real(data: dict[PhasePower]) -> (dict[float], dict[float], dict[float]):
+    a = {}
+    b = {}
+    c = {}
+    for k, v in data.items():
+        if v['a']['real'] != 0.0:
+            a[k] = v['a']['real']/1000
+        if v['b']['real'] != 0.0:
+            b[k] = v['b']['real']/1000
+        if v['c']['real'] != 0.0:
+            c[k] = v['c']['real']/1000
+    return (a, b, c)
+
+
+def extract_comps_imag(data: dict[PhasePower]) -> (dict[float], dict[float], dict[float]):
+    a = {}
+    b = {}
+    c = {}
+    for k, v in data.items():
+        if v['a']['imag'] != 0.0:
+            a[k] = v['a']['imag']/1000
+        if v['b']['imag'] != 0.0:
+            b[k] = v['b']['imag']/1000
+        if v['c']['imag'] != 0.0:
+            c[k] = v['c']['imag']/1000
+    return (a, b, c)
+
+
 def extract_pecs_real(data: dict[PhasePower]) -> (dict[float], dict[float], dict[float]):
     a = {}
     b = {}
@@ -64,9 +92,12 @@ def extract_pecs_imag(data: dict[PhasePower]) -> (dict[float], dict[float], dict
 
 
 def percent_avail(s: float, p: float, q: float) -> float:
-    if p == 0.0:
+    if q == 0.0:
         return 0
-    return abs(q)/math.sqrt(math.pow(s, 2)-math.pow(p, 2))
+
+    num = abs(q)
+    den = math.sqrt(s**2 - p**2)
+    return num/den
 
 
 def gather_pecs(
@@ -200,7 +231,6 @@ def plot_3d(summary: DataInfo) -> None:
         pecs = step['pecs']
         (imag_a, imag_b, imag_c) = extract_pecs_imag(pecs)
         (real_a, real_b, real_c) = extract_pecs_real(pecs)
-
         ax, ay = gather_pecs(dist, np_a, real_a, imag_a)
         bx, by = gather_pecs(dist, np_b, real_b, imag_b)
         cx, cy = gather_pecs(dist, np_c, real_c, imag_c)

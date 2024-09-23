@@ -58,7 +58,6 @@ class PhasePower:
 
         assert (3 == len(real))
         assert (3 == len(imag))
-        print(real, imag)
         self.a = ComplexPower(
             real=real[0], imag=imag[0])
         self.b = ComplexPower(
@@ -223,7 +222,9 @@ class Data:
     total_load: PhasePower
     net_load: PhasePower
     pec_dispatch: PhasePower
+    comp_dispatch: PhasePower
     pecs: dict[PhasePower] = field(default_factory=dict)
+    compensators: dict[PhasePower] = field(default_factory=dict)
 
 
 @dataclass

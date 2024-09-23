@@ -1,6 +1,7 @@
 import importlib
 import math
 import os
+import csv
 from argparse import ArgumentParser
 from datetime import datetime
 from typing import Any, Dict
@@ -15,9 +16,33 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 
-cim = None
+import cimgraph.data_profile.rc4_2021 as cim
+from cmath import exp
+
+# cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
+
+
+IEEE123_APPS = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
+ieee123_apps_feeder_head_measurement_mrids = [
+    "_903a0e85-6a11-4b8e-82cf-163376df7764",
+    "_6d82c9d9-5f99-4356-8a8d-acda9cd6f17b",
+    "_971765b5-da69-4ea8-a0cb-d2b9613b8ee3"
+]
+
+def add_data_to_csv(file_path, data, header=None):
+    # Check if the file exists
+    file_exists = os.path.isfile(file_path)
+
+    # Open the CSV file in append mode (or create it if it doesn't exist)
+    with open(file_path, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # If the file doesn't exist, write the header first
+        if not file_exists and header:
+            writer.writerow(header)
+        # Write the data (a list or tuple representing a row)
+        writer.writerow(data)
 
 
 def findMeasurement(measurementsList, type: str, phases):
@@ -121,8 +146,8 @@ def findFeederPowerRating(cimObj):
                            f'{cimObj.name}!')
     powerTransformerEnds = xfmr.PowerTransformerEnd
     if powerTransformerEnds:
-        keys = list(powerTransformerEnds.keys())
-        feederPowerRating = float(powerTransformerEnds[keys[0]].ratedS)
+        # keys = list(powerTransformerEnds.keys())
+        feederPowerRating = float(powerTransformerEnds[0].ratedS)
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
     return feederPowerRating
@@ -287,6 +312,7 @@ class PeakShavingController(object):
                  gad_obj: GridAPPSD,
                  model_id: str,
                  peak_setpoint: float = None,
+                 base_setpoint: float = None,
                  sim_id: str = None,
                  simulation: Simulation = None):
         if not isinstance(gad_obj, GridAPPSD):
@@ -296,7 +322,9 @@ class PeakShavingController(object):
         if model_id is None or model_id == '':
             raise ValueError(f'model_id must be a valid uuid.')
         if not isinstance(peak_setpoint, float) and peak_setpoint is not None:
-            raise TypeError(f'peak_setpoint must be an float type or {None}!')
+            raise TypeError(f'peak_setpoint must be of float type or {None}!')
+        if not isinstance(base_setpoint, float) and base_setpoint is not None:
+            raise TypeError(f'base_setpoint must be of float type or {None}!')
         if not isinstance(sim_id, str) and sim_id is not None:
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
@@ -313,6 +341,9 @@ class PeakShavingController(object):
         self.peak_setpoint_A = None
         self.peak_setpoint_B = None
         self.peak_setpoint_C = None
+        self.base_setpoint_A = None
+        self.base_setpoint_B = None
+        self.base_setpoint_C = None
         self.measurements_topic = None
         self.setpoints_topic = None
         self.simulation = None
@@ -353,12 +384,58 @@ class PeakShavingController(object):
             self.peak_setpoint_C = peak_setpoint / 3.0
         else:
             self.configurePeakShavingSetpoint()
+        if base_setpoint is not None:
+            self.base_setpoint_A = base_setpoint / 3.0
+            self.base_setpoint_B = base_setpoint / 3.0
+            self.base_setpoint_C = base_setpoint / 3.0
+        else:
+            self.base_setpoint_A = 0.8 * self.peak_setpoint_A
+            self.base_setpoint_B = 0.8 * self.peak_setpoint_B
+            self.base_setpoint_C = 0.8 * self.peak_setpoint_C
         self.findFeederHeadLoadMeasurements()
         if self.simulation is not None:
             self.simulation.start_simulation()
 
         self.isValid = True
         self.first_message = True
+
+        # data output
+        out_dir = Path(__file__).parent/"output"
+        feeder = self.graph_model.graph.get(cim.Feeder, {}).get(model_id)
+        self.model_results_path = out_dir/feeder.name
+        self.model_results_path.mkdir(parents=True, exist_ok=True)
+        # self.findFeederHeadLoadMeasurements()
+        self.init_output_file()
+
+    def init_output_file(self):
+        for child in self.model_results_path.iterdir():
+            child.unlink()
+        with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "voltage"]
+            writer.writerow(header)
+        with open(self.model_results_path / "total_load.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "phase", "p", "q"]
+            writer.writerow(header)
+
+    def save_total_load_data(self, time, total_loads):
+        file_path = self.model_results_path/"total_load.csv"
+        header = ["time", "phase", "p", "q"]
+        for phase, load in total_loads.items():
+            data = [time, phase, load.real, load.imag]
+            add_data_to_csv(file_path, data, header=header)
+
+    def save_voltage_data(self, time):
+        file_path = self.model_results_path/"voltages.csv"
+        header = ["time", "mrid", "node", "phase", "voltage"]
+        for mrid in self.pnv_measurements.keys():
+            v = self.pnv_measurements_pu[mrid]
+            phase = self.pnv_measurements[mrid]["measurement_object"].phases.value
+            node = self.pnv_measurements[mrid]["measurement_object"].Terminal.ConnectivityNode.name
+            if v is not None:
+                data = [time, mrid, node, phase, v]
+                add_data_to_csv(file_path, data, header=header)
 
     def configureBatteryProperties(self):
         '''This function uses cimgraph to populate the following properties:
@@ -367,8 +444,8 @@ class PeakShavingController(object):
             self.controllable_batteries_B
             self.controllable_batteries_C
         '''
-        powerElectronicsConnections = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
-        for pec in powerElectronicsConnections:
+        powerElectronicsConnections: dict[str, cim.PowerElectronicsConnection] = self.graph_model.graph.get(cim.PowerElectronicsConnection, {})
+        for pec in powerElectronicsConnections.values():
             isBatteryInverter = False
             batteryCapacity = 0.0
             for powerElectronicsUnit in pec.PowerElectronicsUnit:
@@ -380,7 +457,7 @@ class PeakShavingController(object):
                 if inverterPhases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
                     self.installed_battery_capacity_A += batteryCapacity
                     self.installed_battery_power_A += float(pec.ratedS)
-                    self.controllable_batteries_A[pec.mrid] = {
+                    self.controllable_batteries_A[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -392,7 +469,7 @@ class PeakShavingController(object):
                 elif inverterPhases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
                     self.installed_battery_capacity_B += batteryCapacity
                     self.installed_battery_power_B += float(pec.ratedS)
-                    self.controllable_batteries_B[pec.mrid] = {
+                    self.controllable_batteries_B[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -404,7 +481,7 @@ class PeakShavingController(object):
                 elif inverterPhases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
                     self.installed_battery_capacity_C += batteryCapacity
                     self.installed_battery_power_C += float(pec.ratedS)
-                    self.controllable_batteries_C[pec.mrid] = {
+                    self.controllable_batteries_C[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -503,7 +580,7 @@ class PeakShavingController(object):
                 elif inverterPhases in [cim.PhaseCode.ABC, cim.PhaseCode.ABCN]:
                     self.installed_battery_capacity_ABC += batteryCapacity
                     self.installed_battery_power_ABC += float(pec.ratedS)
-                    self.controllable_batteries_ABC[pec.mrid] = {
+                    self.controllable_batteries_ABC[pec.mRID] = {
                         'object': pec,
                         'maximum_power': float(pec.ratedS),
                         'power_measurements': findMeasurements(pec.Measurements, 'VA'),
@@ -520,6 +597,8 @@ class PeakShavingController(object):
             raise TypeError('PeakShavingController.getInverterPhases(): cimObj must be an instance of '
                             'cim.PowerElectronicsConnection!')
         strPhases = ''
+        if len(cimObj.PowerElectronicsConnectionPhases) == 0:
+            strPhases = "ABC"
         for pecp in cimObj.PowerElectronicsConnectionPhases:
             if pecp.phase != cim.SinglePhaseKind.s1 and pecp.phase != cim.SinglePhaseKind.s2:
                 strPhases += pecp.phase.value
@@ -533,24 +612,39 @@ class PeakShavingController(object):
                 phaseCodeStr += 'B'
             if 'C' in strPhases:
                 phaseCodeStr += 'C'
-            phaseCode = cim.PhaseCode('phaseCodeStr')
+            phaseCode = cim.PhaseCode(phaseCodeStr)
         else:    # inverter is on the secondary system need to trace up to the centertapped tansformer.
-            phaseCode = self.findPrimaryPhase(cimObj)
+            phaseCode = findPrimaryPhase(cimObj)
         return phaseCode
 
     def configurePeakShavingSetpoint(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
         feederPowerRating = 0.0
-        for source in energySources.values:
+        for source in energySources.values():
             feederPowerRating = findFeederPowerRating(source)
-        self.peak_setpoint_A = (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95)
-        self.peak_setpoint_B = (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95)
-        self.peak_setpoint_C = (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95)
+        self.peak_setpoint_A = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95))
+        self.peak_setpoint_B = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95))
+        self.peak_setpoint_C = max(0.5 * (feederPowerRating / 3.0),
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95))
 
     def findFeederHeadLoadMeasurements(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
+        # special case for ieee123_apps
+        if self.graph_model.container.mRID == IEEE123_APPS:
+            for mrid in ieee123_apps_feeder_head_measurement_mrids:
+                for measurement in self.graph_model.graph.get(cim.Analog, {}).values():
+                    if measurement.mRID == mrid:
+                        if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                            self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
+                        elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                            self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
+                        elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                            self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
+            return
         feederTransformer = None
-        for source in energySources.values:
+        for source in energySources.values():
             feederTransformer = findFeederTransformer(source)
             transformerMeasurements = feederTransformer.Measurements
             for measurement in transformerMeasurements:
@@ -587,7 +681,7 @@ class PeakShavingController(object):
                     measDict['value'] = measurement
             measurement = measurements.get(self.controllable_batteries_ABC[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
-                self.controllable_batteries_A[mrid]['soc_measurement']['value'] = measurement
+                self.controllable_batteries_ABC[mrid]['soc_measurement']['value'] = measurement
         for mrid in self.controllable_batteries_A.keys():
             for measDict in self.controllable_batteries_A[mrid]['power_measurements']:
                 measurement = measurements.get(measDict['object'].mRID)
@@ -625,115 +719,55 @@ class PeakShavingController(object):
         lower_limit = 0.2
         upper_limit = 0.8
         real_load_A, real_load_B, real_load_C = self.get_load_minus_batteries()
+        power_diff_A = 0.0
+        power_diff_B = 0.0
+        power_diff_C = 0.0
         if real_load_A > self.peak_setpoint_A:
             power_diff_A = real_load_A - self.peak_setpoint_A
         elif real_load_A < self.base_setpoint_A:
             power_diff_A = real_load_A - self.base_setpoint_A
-        else:
-            power_diff_A = 0.0
         if real_load_B > self.peak_setpoint_B:
             power_diff_B = real_load_B - self.peak_setpoint_B
         elif real_load_B < self.base_setpoint_B:
             power_diff_B = real_load_B - self.base_setpoint_B
-        else:
-            power_diff_B = 0.0
         if real_load_C > self.peak_setpoint_C:
             power_diff_C = real_load_C - self.peak_setpoint_C
         elif real_load_C < self.base_setpoint_C:
             power_diff_C = real_load_C - self.base_setpoint_C
-        else:
-            power_diff_C = 0.0
         min_power_diff = min(power_diff_A, power_diff_B, power_diff_C)
         max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
         if min_power_diff > 1e-6:
             control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
+            self.desired_setpoints.update(control_dict)
             power_diff_A -= actual_power / 3.0
             power_diff_B -= actual_power / 3.0
             power_diff_C -= actual_power / 3.0
         elif max_power_diff < -1e-6:
             control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
+            self.desired_setpoints.update(control_dict)
             power_diff_A += abs(actual_power) / 3.0
             power_diff_B += abs(actual_power) / 3.0
             power_diff_C += abs(actual_power) / 3.0
         if power_diff_A > 1e-6:
             control_dict = self.calc_batt_discharge_A(power_diff_A, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_A < -1e-6:
             control_dict = self.calc_batt_charge_A(abs(power_diff_A), upper_limit)
+            self.desired_setpoints.update(control_dict)
         if power_diff_B > 1e-6:
             control_dict = self.calc_batt_discharge_B(power_diff_B, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_B < -1e-6:
             control_dict = self.calc_batt_charge_B(abs(power_diff_B), upper_limit)
+            self.desired_setpoints.update(control_dict)
         if power_diff_C > 1e-6:
             control_dict = self.calc_batt_discharge_C(power_diff_C, lower_limit)
+            self.desired_setpoints.update(control_dict)
         elif power_diff_C < -1e-6:
             control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
-
-        if self.desired_setpoints['A'] or self.desired_setpoints['B'] or self.desired_setpoints['C']:
+            self.desired_setpoints.update(control_dict)
+        if self.desired_setpoints:
             self.send_setpoints()
-
-    def calc_batt_discharge_ABC(self, power_to_discharge_ABC, lower_limit):
-        if not isinstance(power_to_discharge_ABC, float):
-            raise TypeError('calc_batt_discharge_ABC(): power_to_discharge_ABC must be an instance of float!')
-        if power_to_discharge_ABC < 0.0:
-            raise ValueError(f'calc_batt_discharge_ABC(): power_to_discharge_ABC must be nonnegative!')
-        if not isinstance(lower_limit, float):
-            raise TypeError('calc_batt_discharge_ABC(): lower_limit must be an instance of float!')
-        if (lower_limit > 1.0) or (lower_limit < 0.0):
-            raise ValueError(f'calc_batt_discharge_ABC(): lower_limit must belong to the [0, 1] interval!')
-        return_dict = {}
-        power_acc = 0.0
-        available_capacity_ABC = self.installed_battery_power_ABC
-        for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-                continue
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
-            if batt_soc is not None:
-                if batt_soc < lower_limit:
-                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-            else:
-                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
-        if available_capacity_ABC <= 0.0:
-            return return_dict, power_acc
-        for batt_id in self.controllable_batteries_ABC.keys():
-            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
-            if measurement is None:
-                continue
-            mag = measurement.get('magnitude')
-            ang_in_deg = measurement.get('angle')
-            if (mag is None) or (ang_in_deg is None):
-                continue
-            current_power = mag * math.cos(math.radians(ang_in_deg))
-            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
-            if batt_soc is not None:
-                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
-                    return_dict[batt_id] = {
-                        'object': self.controllable_batteries_ABC['object'],
-                        'old_setpoint': current_power,
-                        'setpoint': 0.0
-                    }
-                    continue
-            else:
-                continue
-            new_power = (power_to_discharge_ABC /
-                         available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
-            new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1e-6:
-                return_dict[batt_id] = {
-                    'object': self.controllable_batteries_ABC['object'],
-                    'old_setpoint': current_power,
-                    'setpoint': new_power
-                }
-                power_acc += new_power
-            else:
-                power_acc += current_power
-        return return_dict, power_acc
 
     def get_load_minus_batteries(self):
         load_A = 0.0
@@ -808,10 +842,140 @@ class PeakShavingController(object):
                         load_C -= mag * math.cos(math.radians(ang_in_deg))
         return (load_A, load_B, load_C)
 
+    def calc_batt_discharge_ABC(self, power_to_discharge_ABC, lower_limit):
+        if not isinstance(power_to_discharge_ABC, float):
+            raise TypeError('calc_batt_discharge_ABC(): power_to_discharge_ABC must be an instance of float!')
+        if power_to_discharge_ABC < 0.0:
+            raise ValueError(f'calc_batt_discharge_ABC(): power_to_discharge_ABC must be nonnegative!')
+        if not isinstance(lower_limit, float):
+            raise TypeError('calc_batt_discharge_ABC(): lower_limit must be an instance of float!')
+        if (lower_limit > 1.0) or (lower_limit < 0.0):
+            raise ValueError(f'calc_batt_discharge_ABC(): lower_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        power_acc = 0.0
+        available_capacity_ABC = self.installed_battery_power_ABC
+        for batt_id in self.controllable_batteries_ABC.keys():
+            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                continue
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc < lower_limit:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+            else:
+                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+        if available_capacity_ABC <= 0.0:
+            return return_dict, power_acc
+        for batt_id in self.controllable_batteries_ABC.keys():
+            measurement = self.controllable_batteries_ABC[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_ABC[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
+            new_power = (power_to_discharge_ABC /
+                         available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-6:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_ABC[batt_id]['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': new_power
+                }
+                power_acc += new_power
+            else:
+                power_acc += current_power
+        return return_dict, power_acc
+
+    def calc_batt_charge_ABC(self, power_to_charge_ABC, upper_limit):
+        if not isinstance(power_to_charge_ABC, float):
+            raise TypeError('calc_batt_charge_ABC(): power_to_charge_ABC must be an instance of float!')
+        if power_to_charge_ABC < 0.0:
+            raise ValueError(f'calc_batt_charge_ABC(): power_to_charge_ABC must be nonnegative!')
+        if not isinstance(upper_limit, float):
+            raise TypeError('calc_batt_charge_ABC(): upper_limit must be an instance of float!')
+        if (upper_limit > 1.0) or (upper_limit < 0.0):
+            raise ValueError(f'calc_batt_charge_ABC(): upper_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        power_acc = 0.0
+        available_capacity_ABC = self.installed_battery_power_ABC
+        for batt_id in self.controllable_batteries_ABC.keys():
+            for batt_power_measurements in self.controllable_batteries_ABC[batt_id]['power_measurements']:
+                measurement = batt_power_measurements.get('value')
+                if measurement is None:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    continue
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+                    continue
+            batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+            else:
+                available_capacity_ABC -= self.controllable_batteries_ABC[batt_id]['maximum_power']
+        if available_capacity_ABC <= 0.0:
+            return return_dict, power_acc
+        for batt_id in self.controllable_batteries_ABC.keys():
+            for batt_power_measurements in self.controllable_batteries_ABC[batt_id]['power_measurements']:
+                measurement = batt_power_measurements.get('value')
+                if measurement is None:
+                    continue
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if (mag is None) or (ang_in_deg is None):
+                    continue
+                current_power = mag * math.cos(math.radians(ang_in_deg))
+                batt_soc = self.controllable_batteries_ABC[batt_id]['soc_measurement'].get('value')
+                if batt_soc is not None:
+                    if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
+                        return_dict[batt_id] = {
+                            'object': self.controllable_batteries_ABC[batt_id]['object'],
+                            'old_setpoint': current_power,
+                            'setpoint': 0.0
+                        }
+                        continue
+                else:
+                    continue
+                new_power = (power_to_charge_ABC /
+                             available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
+                new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
+                if abs(new_power - current_power) > 1e-6:
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_ABC[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': -new_power
+                    }
+                    power_acc += new_power
+                else:
+                    power_acc += current_power
+        return return_dict, power_acc
+
     def calc_batt_discharge_A(self, power_to_discharge_A, lower_limit):
         if not isinstance(power_to_discharge_A, float):
             raise TypeError('calc_batt_discharge_A(): power_to_discharge_A must be an instance of float!')
-        if power_to_discharge_A >= 0.0:
+        if power_to_discharge_A < 0.0:
             raise ValueError(f'calc_batt_discharge_A(): power_to_discharge_A must be nonnegative!')
         if not isinstance(lower_limit, float):
             raise TypeError('calc_batt_discharge_A(): lower_limit must be an instance of float!')
@@ -820,21 +984,24 @@ class PeakShavingController(object):
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
         for batt_id in self.controllable_batteries_A.keys():
+            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
             batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
                 if batt_soc < lower_limit:
                     available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
             else:
                 available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
-        if available_capacity_A < 0.0:
+        if available_capacity_A <= 0.0:
             return return_dict
         for batt_id in self.controllable_batteries_A.keys():
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
-            if batt_soc is not None:
-                if batt_soc < lower_limit:
-                    continue
-            else:
-                continue
             measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
             if measurement is None:
                 continue
@@ -843,12 +1010,23 @@ class PeakShavingController(object):
             if (mag is None) or (ang_in_deg is None):
                 continue
             current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_A[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
             new_power = (power_to_discharge_A /
                          available_capacity_A) * self.controllable_batteries_A[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_A[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1e-3:
+            if abs(new_power - current_power) > 1e-6:
                 return_dict[batt_id] = {
-                    'object': self.controllable_batteries_A['object'],
+                    'object': self.controllable_batteries_A[batt_id]['object'],
                     'old_setpoint': current_power,
                     'setpoint': new_power
                 }
@@ -857,7 +1035,7 @@ class PeakShavingController(object):
     def calc_batt_charge_A(self, power_to_charge_A, upper_limit):
         if not isinstance(power_to_charge_A, float):
             raise TypeError('calc_batt_charge_A(): power_to_charge_A must be an instance of float!')
-        if power_to_charge_A >= 0.0:
+        if power_to_charge_A < 0.0:
             raise ValueError(f'calc_batt_charge_A(): power_to_charge_A must be nonnegative!')
         if not isinstance(upper_limit, float):
             raise TypeError('calc_batt_charge_A(): upper_limit must be an instance of float!')
@@ -866,21 +1044,24 @@ class PeakShavingController(object):
         return_dict = {}
         available_capacity_A = self.installed_battery_power_A
         for batt_id in self.controllable_batteries_A.keys():
+            measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
+                continue
             batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
             if batt_soc is not None:
                 if batt_soc > upper_limit:
                     available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
             else:
                 available_capacity_A -= self.controllable_batteries_A[batt_id]['maximum_power']
-        if available_capacity_A < 0.0:
+        if available_capacity_A <= 0.0:
             return return_dict
         for batt_id in self.controllable_batteries_A.keys():
-            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
-            if batt_soc is not None:
-                if batt_soc > upper_limit:
-                    continue
-            else:
-                continue
             measurement = self.controllable_batteries_A[batt_id]['power_measurement'].get('value')
             if measurement is None:
                 continue
@@ -889,12 +1070,263 @@ class PeakShavingController(object):
             if (mag is None) or (ang_in_deg is None):
                 continue
             current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_A[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_A[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
             new_power = (power_to_charge_A /
                          available_capacity_A) * self.controllable_batteries_A[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_A[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1e-3:
+            if abs(new_power - current_power) > 1e-6:
                 return_dict[batt_id] = {
-                    'object': self.controllable_batteries_A['object'],
+                    'object': self.controllable_batteries_A[batt_id]['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': -new_power
+                }
+        return return_dict
+
+    def calc_batt_discharge_B(self, power_to_discharge_B, lower_limit):
+        if not isinstance(power_to_discharge_B, float):
+            raise TypeError('calc_batt_discharge_B(): power_to_discharge_B must be an instance of float!')
+        if power_to_discharge_B < 0.0:
+            raise ValueError(f'calc_batt_discharge_B(): power_to_discharge_B must be nonnegative!')
+        if not isinstance(lower_limit, float):
+            raise TypeError('calc_batt_discharge_B(): lower_limit must be an instance of float!')
+        if (lower_limit > 1.0) or (lower_limit < 0.0):
+            raise ValueError(f'calc_batt_discharge_B(): lower_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        available_capacity_B = self.installed_battery_power_B
+        for batt_id in self.controllable_batteries_B.keys():
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+                continue
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc < lower_limit:
+                    available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+            else:
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+        if available_capacity_B <= 0.0:
+            return return_dict
+        for batt_id in self.controllable_batteries_B.keys():
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_B[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
+            new_power = (power_to_discharge_B /
+                         available_capacity_B) * self.controllable_batteries_B[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_B[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-6:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_B[batt_id]['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': new_power
+                }
+        return return_dict
+
+    def calc_batt_charge_B(self, power_to_charge_B, upper_limit):
+        if not isinstance(power_to_charge_B, float):
+            raise TypeError('calc_batt_charge_B(): power_to_charge_B must be an instance of float!')
+        if power_to_charge_B < 0.0:
+            raise ValueError(f'calc_batt_charge_B(): power_to_charge_B must be nonnegative!')
+        if not isinstance(upper_limit, float):
+            raise TypeError('calc_batt_charge_B(): upper_limit must be an instance of float!')
+        if (upper_limit > 1.0) or (upper_limit < 0.0):
+            raise ValueError(f'calc_batt_charge_B(): upper_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        available_capacity_B = self.installed_battery_power_B
+        for batt_id in self.controllable_batteries_B.keys():
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+                continue
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+            else:
+                available_capacity_B -= self.controllable_batteries_B[batt_id]['maximum_power']
+        if available_capacity_B <= 0.0:
+            return return_dict
+        for batt_id in self.controllable_batteries_B.keys():
+            measurement = self.controllable_batteries_B[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_B[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_B[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
+            new_power = (power_to_charge_B /
+                         available_capacity_B) * self.controllable_batteries_B[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_B[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-6:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_B[batt_id]['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': -new_power
+                }
+        return return_dict
+
+    def calc_batt_discharge_C(self, power_to_discharge_C, lower_limit):
+        if not isinstance(power_to_discharge_C, float):
+            raise TypeError('calc_batt_discharge_C(): power_to_discharge_C must be an instance of float!')
+        if power_to_discharge_C < 0.0:
+            raise ValueError(f'calc_batt_discharge_C(): power_to_discharge_C must be nonnegative!')
+        if not isinstance(lower_limit, float):
+            raise TypeError('calc_batt_discharge_C(): lower_limit must be an instance of float!')
+        if (lower_limit > 1.0) or (lower_limit < 0.0):
+            raise ValueError(f'calc_batt_discharge_C(): lower_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        available_capacity_C = self.installed_battery_power_C
+        for batt_id in self.controllable_batteries_C.keys():
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+                continue
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc < lower_limit:
+                    available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+            else:
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+        if available_capacity_C <= 0.0:
+            return return_dict
+        for batt_id in self.controllable_batteries_C.keys():
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc < lower_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_C[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
+            new_power = (power_to_discharge_C /
+                         available_capacity_C) * self.controllable_batteries_C[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_C[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-6:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_C[batt_id]['object'],
+                    'old_setpoint': current_power,
+                    'setpoint': new_power
+                }
+        return return_dict
+
+    def calc_batt_charge_C(self, power_to_charge_C, upper_limit):
+        if not isinstance(power_to_charge_C, float):
+            raise TypeError('calc_batt_charge_C(): power_to_charge_C must be an instance of float!')
+        if power_to_charge_C < 0.0:
+            raise ValueError(f'calc_batt_charge_C(): power_to_charge_C must be nonnegative!')
+        if not isinstance(upper_limit, float):
+            raise TypeError('calc_batt_charge_C(): upper_limit must be an instance of float!')
+        if (upper_limit > 1.0) or (upper_limit < 0.0):
+            raise ValueError(f'calc_batt_charge_C(): upper_limit must belong to the [0, 1] interval!')
+        return_dict = {}
+        available_capacity_C = self.installed_battery_power_C
+        for batt_id in self.controllable_batteries_C.keys():
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+                continue
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if batt_soc > upper_limit:
+                    available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+            else:
+                available_capacity_C -= self.controllable_batteries_C[batt_id]['maximum_power']
+        if available_capacity_C <= 0.0:
+            return return_dict
+        for batt_id in self.controllable_batteries_C.keys():
+            measurement = self.controllable_batteries_C[batt_id]['power_measurement'].get('value')
+            if measurement is None:
+                continue
+            mag = measurement.get('magnitude')
+            ang_in_deg = measurement.get('angle')
+            if (mag is None) or (ang_in_deg is None):
+                continue
+            current_power = mag * math.cos(math.radians(ang_in_deg))
+            batt_soc = self.controllable_batteries_C[batt_id]['soc_measurement'].get('value')
+            if batt_soc is not None:
+                if (batt_soc > upper_limit) and (abs(current_power) > 1e-6):
+                    return_dict[batt_id] = {
+                        'object': self.controllable_batteries_C[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
+                    continue
+            else:
+                continue
+            new_power = (power_to_charge_C /
+                         available_capacity_C) * self.controllable_batteries_C[batt_id]['maximum_power']
+            new_power = min(new_power, self.controllable_batteries_C[batt_id]['maximum_power'])
+            if abs(new_power - current_power) > 1e-6:
+                return_dict[batt_id] = {
+                    'object': self.controllable_batteries_C[batt_id]['object'],
                     'old_setpoint': current_power,
                     'setpoint': -new_power
                 }

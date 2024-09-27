@@ -1,0 +1,364 @@
+{
+    "command": "update",
+    "input": {
+        "message": {
+            "timestamp": 1727377227,
+            "difference_mrid": "94862796-7e7a-431b-a3d9-67c09cbfc9c4",
+            "reverse_differences": [
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                }
+            ],
+            "forward_differences": [
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 200000.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 100000.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 200000.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 100000.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 200000.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 100000.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 64537.64246729679
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 32268.821233648596
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 19129.72211872142
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 9564.861059360474
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 180749.75207083306
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 5028.7843661188845
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 2514.392183060069
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                },
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 51635.07813651103
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 911.6002599406556
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 455.8001299702709
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                }
+            ]
+        },
+        "simulation_id": "1447730573"
+    }
+}

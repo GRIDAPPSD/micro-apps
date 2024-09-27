@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 import cvxpy as cp
 import importlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 import cimgraph.utils
 from cimgraph.databases import ConnectionParameters
@@ -85,6 +85,7 @@ class PowerFactor(object):
     data_info: models.DataInfo
 
     def __init__(self, gapps: GridAPPSD, sim: Simulation, network: cimgraph.GraphModel):
+        self.simulation = sim
         self.gapps = gapps
         self.switches = query.get_switches(network)
         self.compensators = query.get_compensators(network)
@@ -221,6 +222,8 @@ class PowerFactor(object):
                     old = self.electronics.measurements_va[info.mrid]
                     new = models.update_va(info, val, old)
                     self.electronics.measurements_va[info.mrid] = new
+        if self.simulation is not None:
+            self.simulation.resume()
 
     def toggle_switches(self) -> None:
         v: models.MeasurementInfo
@@ -461,6 +464,9 @@ if __name__ == "__main__":
         epoch = datetime.timestamp(start)
         duration = timedelta(hours=24).total_seconds()
 
+        start = datetime(2023, 1, 1, 12, tzinfo=timezone.utc)
+        epoch = datetime.timestamp(start)
+        duration = timedelta(hours=1).total_seconds()
         sim_args = SimulationArgs(
             start_time=epoch,
             duration=duration,
@@ -470,7 +476,8 @@ if __name__ == "__main__":
             run_realtime=False,
             simulation_name=system.modelName,
             power_flow_solver_method="NR",
-            model_creation_config=asdict(model_config)
+            model_creation_config=asdict(model_config),
+            pause_after_measurements=True,
         )
 
         sim_config = SimulationConfig(

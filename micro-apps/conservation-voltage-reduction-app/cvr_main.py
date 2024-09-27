@@ -2,7 +2,7 @@ import importlib
 import math
 import os
 from argparse import ArgumentParser
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pickle import FALSE
 from typing import Any, Dict
 from uuid import uuid4
@@ -67,6 +67,7 @@ def findFeederTransformer(cimObj):
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
     return xfmr
 
+
 class ConservationVoltageReductionController(object):
     """CVR Control Class
         This class implements a centralized algorithm for conservation voltage reduction by controlling regulators and
@@ -128,7 +129,7 @@ class ConservationVoltageReductionController(object):
                 Returns: NA.
             cvr_control(): This is the main function for performing the cvr control.
     """
-    period = 3600
+    period = 60
     lower_voltage_limit_pu = 0.9
     max_violation_time = 300
 
@@ -153,6 +154,7 @@ class ConservationVoltageReductionController(object):
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
+        self.timestamp = 0
         self.model_id = model_id
         self.id = uuid4()
         self.platform_measurements = {}
@@ -165,6 +167,9 @@ class ConservationVoltageReductionController(object):
         self.pos_measurements = {}
         self.link_measurements = {}
         self.source_measurements = {}
+        self.peak_va_measurements_A = {}
+        self.peak_va_measurements_B = {}
+        self.peak_va_measurements_C = {}
         if period is None:
             self.period = ConservationVoltageReductionController.period
         else:
@@ -197,15 +202,16 @@ class ConservationVoltageReductionController(object):
             self.setpoints_topic = topics.field_input_topic()
         # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
         self.graph_model = buildGraphModel(model_id)
-        print("source bus")
-        energy_sources = self.graph_model.graph.get(cim.EnergySource, {})
-        for source_mrid, source in energy_sources.items():
-            self.source = source
-            print(source_mrid)
-            terminals = source.Terminals
-            self.source_bus = terminals[0].ConnectivityNode
-            self.source_mrid = terminals[0].ConnectivityNode.mRID
-            print(self.source_bus.name)
+        # print("source bus")
+        # energy_sources = self.graph_model.graph.get(cim.EnergySource, {})
+        # for source_mrid, source in energy_sources.items():
+        #     self.source = source
+        #     print(source_mrid)
+        #     terminals = source.Terminals
+        #     self.source_bus = terminals[0].ConnectivityNode
+        #     self.source_mrid = terminals[0].ConnectivityNode.mRID
+        #     print(self.source_bus.name)
+        self.findFeederHeadLoadMeasurements()
         # Store controllable_capacitors
         self.controllable_capacitors = self.graph_model.graph.get(cim.LinearShuntCompensator, {})
         # print(self.controllable_capacitors.keys())
@@ -239,14 +245,14 @@ class ConservationVoltageReductionController(object):
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
                             transformerTank.name
-        self.source_device = None
-        for terminal in self.source_bus.Terminals:
-            for measurement in terminal.Measurements:
-                if measurement.measurementType == "VA":
-                    mrid = measurement.mRID
-                    phase = measurement.phases.value
-                    self.source_measurements[phase] = {'measurement_object': measurement, 'measurement_value': None}
-                    pass
+        # self.source_device = None
+        # for terminal in self.source_bus.Terminals:
+        #     for measurement in terminal.Measurements:
+        #         if measurement.measurementType == "VA":
+        #             mrid = measurement.mRID
+        #             phase = measurement.phases.value
+        #             self.source_measurements[phase] = {'measurement_object': measurement, 'measurement_value': None}
+        #             pass
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
@@ -291,6 +297,7 @@ class ConservationVoltageReductionController(object):
         out_dir = Path(__file__).parent/"output"
         feeder = self.graph_model.graph.get(cim.Feeder, {}).get(self.model_id)
         self.model_results_path = out_dir/feeder.name
+        print(self.model_results_path)
         self.model_results_path.mkdir(parents=True, exist_ok=True)
         # self.findFeederHeadLoadMeasurements()
         self.init_output_file()
@@ -307,6 +314,26 @@ class ConservationVoltageReductionController(object):
             writer = csv.writer(file)
             header = ["time", "phase", "p", "q"]
             writer.writerow(header)
+        with open(self.model_results_path / "caps.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "status"]
+            writer.writerow(header)
+        with open(self.model_results_path / "regs.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "tap"]
+            writer.writerow(header)
+        with open(self.model_results_path / "feeder_head.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "phase", "p", "q"]
+            writer.writerow(header)
+        with open(self.model_results_path / "caps_meas.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "status"]
+            writer.writerow(header)
+        with open(self.model_results_path / "regs_meas.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "node", "phase", "tap"]
+            writer.writerow(header)
 
     def get_feeder_head_measurements(self, measurements):
         total_loads = {}
@@ -315,19 +342,46 @@ class ConservationVoltageReductionController(object):
                 phase = self.graph_model.graph.get(cim.Analog, {}).get(mrid).phases.value
                 s_magnitude = measurements.get(mrid).get("magnitude")
                 s_angle_rad = measurements.get(mrid).get("angle")
-                total_loads[phase] = s_magnitude*exp(1j*s_angle_rad)
+                total_loads[phase] = s_magnitude*exp(1j*math.radians(s_angle_rad))
         return total_loads
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
+
+        # if self.simulation is not None:
+        #     self.simulation.pause()
+        self.timestamp = timestamp
         self.desired_setpoints.clear()
         self.log.info(f"entering on_measurement with timestamp={timestamp}")
         total_loads = self.get_feeder_head_measurements(measurements)
         self.save_total_load_data(timestamp, total_loads)
-        for mrid in self.link_measurements.keys():
-            meas = measurements.get(mrid)
-            if meas is not None:
-                self.link_measurements[mrid]['measurement_value'] = meas
-                print(meas)
+
+        for mrid in self.peak_va_measurements_A.keys():
+            measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_A[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "A", load.real, load.imag])
+        for mrid in self.peak_va_measurements_B.keys():
+            measurement = measurements.get(self.peak_va_measurements_B[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_B[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "B", load.real, load.imag])
+        for mrid in self.peak_va_measurements_C.keys():
+            measurement = measurements.get(self.peak_va_measurements_C[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_C[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "C", load.real, load.imag])
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
@@ -342,15 +396,26 @@ class ConservationVoltageReductionController(object):
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
+                    name = self.pos_measurements[psr_mrid]['measurement_objects'][mrid].name
+                    phases = self.pos_measurements[psr_mrid]['measurement_objects'][mrid].phases.value
+                    data = [timestamp, mrid, name, phases, meas["value"]]
+                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, cim.PowerTransformer):
+                        add_data_to_csv(self.model_results_path/"reg_meas.csv", data)
+                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, cim.LinearShuntCompensator):
+                        add_data_to_csv(self.model_results_path / "cap_meas.csv", data)
 
         self.calculate_per_unit_voltage()
         self.save_voltage_data(timestamp)
         self.update_opendss_with_measurements()
+        print(f"timestep {timestamp} -- next_control_time: {self.next_control_time}")
+
         if int(timestamp) > self.next_control_time:
+            print("int(timestamp) > self.next_control_time")
             self.cvr_control()
             self.next_control_time = int(timestamp) + self.period
             self.voltage_violation_time = -1
         else:
+            print("int(timestamp) <= self.next_control_time")
             total_violation_time = 0
             voltage_violation_phases = ''
             for mrid, val in self.pnv_measurements_pu.items():
@@ -376,6 +441,24 @@ class ConservationVoltageReductionController(object):
                 self.voltage_violation_time = int(timestamp)
         if self.simulation is not None:
             self.simulation.resume()
+
+    def findFeederHeadLoadMeasurements(self):
+        energySources = self.graph_model.graph.get(cim.EnergySource, {})
+        feederLoadObject = None
+        for eSource in energySources.values():
+            feederLoadObject = findFeederHeadPowerMeasurmentsObject(eSource)
+            feederLoadMeasurements = feederLoadObject.Measurements
+            for measurement in feederLoadMeasurements:
+                if measurement.measurementType == 'VA':
+                    if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                        self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                        self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                        self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
+        if not self.peak_va_measurements_A or not self.peak_va_measurements_B or not self.peak_va_measurements_C:
+            raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
+                               'feeder head transformer!')
 
     def calculate_per_unit_voltage(self):
         for mrid in self.pnv_measurements.keys():
@@ -543,6 +626,7 @@ class ConservationVoltageReductionController(object):
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
 
     def cvr_control(self, phases: str = None):
+        print("enter cvr_control()")
         capacitor_list = []
         for cap_mrid, cap in self.controllable_capacitors.items():
             cap_meas_dict = self.pos_measurements.get(cap_mrid)
@@ -802,19 +886,25 @@ class ConservationVoltageReductionController(object):
         return turnsRatio
 
     def send_setpoints(self):
+        print("enter send_setpoints()")
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
             cimObj = dictVal.get('object')
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.LinearShuntCompensator):
+
                 self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
                                                       int(not newSetpoint[0]))
+                data = [self.timestamp, mrid, "", "", newSetpoint[0]]
+                add_data_to_csv(self.model_results_path/"caps.csv", data=data)
             elif isinstance(cimObj, cim.RatioTapChanger):
                 tapChangersList = self.controllable_regulators.get(cim.PowerTransformer.mRID,
                                                                    {}).get('RatioTapChangers', [])
                 for rtp in tapChangersList:
                     self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
+                    data = [self.timestamp, mrid, "", "", newSetpoint]
+                    add_data_to_csv(self.model_results_path/"regs.csv", data=data)
             else:
                 self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
                                  f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
@@ -830,6 +920,43 @@ class ConservationVoltageReductionController(object):
     def __del__(self):
         directoryToDelete = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}'
         removeDirectory(directoryToDelete)
+
+
+def findFeederHeadPowerMeasurmentsObject(cimObj: object):
+    '''
+        Helper function to find feeder transformer
+    '''
+    if not isinstance(cimObj, cim.EnergySource):
+        raise TypeError('findFeederHeadPowerMeasurmentsObject(): cimObj must be an instance of cim.EnergySource!')
+    equipmentToCheck = [cimObj]
+    feederHeadLoadMeasurementsObject = None
+    i = 0
+    while not feederHeadLoadMeasurementsObject and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            powerMeasurementsCount = 0
+            for meas in eq.Measurements:
+                if meas.measurementType == 'VA':
+                    powerMeasurementsCount += 1
+            if powerMeasurementsCount == 3:
+                feederHeadLoadMeasurementsObject = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not feederHeadLoadMeasurementsObject:
+        raise RuntimeError('findFeederPowerRating(): No feeder head object with power measurements could be found for '
+                           f'EnergySource, {cimObj.name}!')
+    return feederHeadLoadMeasurementsObject
 
 
 def findPrimaryPhase(cimObj):
@@ -996,15 +1123,18 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     psc = PowerSystemConfig(Line_name=line_name,
                             SubGeographicalRegion_name=subregion_name,
                             GeographicalRegion_name=region_name)
-    start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    # start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
+    start = datetime(2023, 1, 1, 0, tzinfo=timezone.utc)
+    epoch = datetime.timestamp(start)
+    duration = timedelta(hours=24).total_seconds()
     # start_time = 1726081200  # 9/11/2024 12:00:00 PDT
     sim_args = SimulationArgs(
-        start_time=f'{start_time}',
-        duration=f'{900}',
+        start_time=epoch,
+        duration=duration,
         # duration=60*60,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=False)
+        pause_after_measurements=True)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj

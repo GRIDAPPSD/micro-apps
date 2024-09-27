@@ -1,0 +1,64 @@
+{
+    "command": "update",
+    "input": {
+        "message": {
+            "timestamp": 1727377148,
+            "difference_mrid": "75c89541-9129-4784-b922-74869dd37f68",
+            "reverse_differences": [
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 0.0
+                }
+            ],
+            "forward_differences": [
+                {
+                    "object": "_5FBE0EB4-B59A-4F56-9CC9-C00AA433006C",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 250000.0
+                },
+                {
+                    "object": "_DC88677C-83A6-4B9A-A05F-578B8D5850EB",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 200000.0
+                },
+                {
+                    "object": "_76CBB3CE-2D4C-4392-A1CD-AAEBC2AB5FA5",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 100000.0
+                },
+                {
+                    "object": "_B42011D9-38A0-4D06-8C84-49836267E66B",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 150000.0
+                },
+                {
+                    "object": "_50310945-A608-4A94-98A9-B6E45510F0BF",
+                    "attribute": "PowerElectronicsConnection.p",
+                    "value": 125000.0
+                }
+            ]
+        },
+        "simulation_id": "1447730573"
+    }
+}

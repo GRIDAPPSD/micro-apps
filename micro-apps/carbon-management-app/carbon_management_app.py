@@ -9,7 +9,7 @@ import cvxpy as cp
 # from pandas import DataFrame
 from typing import Any, Dict
 import importlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from argparse import ArgumentParser
 import json
@@ -111,6 +111,7 @@ class CarbonManagementApp(object):
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
+        self.simulation = simulation
         self.gad_obj = gad_obj
         self.init_batt_dis = True
         self._count = 0
@@ -120,6 +121,9 @@ class CarbonManagementApp(object):
         self.Battery = {}
         self.Solar = {}
         self.EnergyConsumer = {}
+        self.peak_va_measurements_A = {}
+        self.peak_va_measurements_B = {}
+        self.peak_va_measurements_C = {}
         self.has_batteries = True
         self.has_power_electronics = True
         self.has_energy_consumers = True
@@ -142,9 +146,11 @@ class CarbonManagementApp(object):
             print("No batteries in system.")
             # raise ValueError("No batteries in network.")
 
+        self.network = network
+        self.findFeederHeadLoadMeasurements()
+
         if self.has_energy_consumers:
             self._collect_energy_consumers(network)
-        self.network = network
         simulation.add_onmeasurement_callback(self.on_measurement)
         # data output
         out_dir = Path(__file__).parent/"output"
@@ -156,7 +162,8 @@ class CarbonManagementApp(object):
 
     def init_output_file(self):
         for child in self.model_results_path.iterdir():
-            child.unlink()
+            if not child.is_dir():
+                child.unlink()
         with open(self.model_results_path / "voltages.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
             header = ["time", "mrid", "node", "phase", "voltage"]
@@ -171,11 +178,19 @@ class CarbonManagementApp(object):
             writer.writerow(header)
         with open(self.model_results_path / "optimization_result.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
-            header = ["time", "battery", "phases", "p_batt"]
+            header = ["time", "mrid", "battery", "phases", "p_batt"]
             writer.writerow(header)
         with open(self.model_results_path / "simulation_table.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
-            header=["time","battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+            header=["time","mrid", "battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+            writer.writerow(header)
+        with open(self.model_results_path / "dispatches.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "value"]
+            writer.writerow(header)
+        with open(self.model_results_path / "feeder_head.csv", mode='a', newline='') as file:
+            writer = csv.writer(file)
+            header = ["time", "mrid", "phase", "p", "q"]
             writer.writerow(header)
 
     def get_feeder_head_measurements(self, measurements):
@@ -432,32 +447,82 @@ class CarbonManagementApp(object):
         for batt in self.Battery:
             name = self.Battery[batt]['name']
             dispatch_batteries[batt] = {}
+            if p_batt[idx].value is None:
+                continue
             dispatch_batteries[batt]['p_batt'] = p_batt[idx].value * 1000
             optimization_solution_table.append([name, self.Battery[batt]['phases'], p_batt[idx].value])
-            data = [timestamp, name, self.Battery[batt]['phases'], p_batt[idx].value]
+            data = [timestamp, batt, name, self.Battery[batt]['phases'], p_batt[idx].value]
             header = ["time", "battery", "phases", "p_batt"]
             add_data_to_csv(self.model_results_path/"optimization_result.csv", data, header=header)
             idx += 1
         print('Optimization Solution')
         print(tabulate(optimization_solution_table, headers=['Battery', 'phases', 'P_batt (kW)'], tablefmt='psql'))
-
-        load_pv = ['{:.3f}'.format(sum_flow_A), '{:.3f}'.format(sum_flow_B), '{:.3f}'.format(sum_flow_C)]
-        load_pv_batt = ['{:.3f}'.format(p_flow_A.value), '{:.3f}'.format(p_flow_B.value),
-                        '{:.3f}'.format(p_flow_C.value)]
-        optimization_summary = []
-        optimization_summary.append([load_pv, load_pv_batt, problem.status])
-        data = [timestamp]
-        data.extend(load_pv)
-        data.extend(load_pv_batt)
-        data.append(problem.status)
-        header = ["time", "load_pv_a", "load_pv_b", "load_pv_c", "load_pv_batt_a", "load_pv_batt_b", "load_pv_batt_c", "status"]
-        add_data_to_csv(self.model_results_path/"optimization_summary.csv", data, header=header)
-        print(tabulate(optimization_summary, headers=['Load+PV (kW)', 'Load+PV+Batt (kW)', 'Status'], tablefmt='psql'))
+        if problem.status == "optimal":
+            load_pv = ['{:.3f}'.format(sum_flow_A), '{:.3f}'.format(sum_flow_B), '{:.3f}'.format(sum_flow_C)]
+            load_pv_batt = ['{:.3f}'.format(p_flow_A.value), '{:.3f}'.format(p_flow_B.value),
+                            '{:.3f}'.format(p_flow_C.value)]
+            optimization_summary = []
+            optimization_summary.append([load_pv, load_pv_batt, problem.status])
+            data = [timestamp]
+            data.extend(load_pv)
+            data.extend(load_pv_batt)
+            data.append(problem.status)
+            header = ["time", "load_pv_a", "load_pv_b", "load_pv_c", "load_pv_batt_a", "load_pv_batt_b", "load_pv_batt_c", "status"]
+            add_data_to_csv(self.model_results_path/"optimization_summary.csv", data, header=header)
+            print(tabulate(optimization_summary, headers=['Load+PV (kW)', 'Load+PV+Batt (kW)', 'Status'], tablefmt='psql'))
         return dispatch_batteries
 
+    def findFeederHeadLoadMeasurements(self):
+        energySources = self.network.graph.get(cim.EnergySource, {})
+        feederLoadObject = None
+        for eSource in energySources.values():
+            feederLoadObject = findFeederHeadPowerMeasurmentsObject(eSource)
+            feederLoadMeasurements = feederLoadObject.Measurements
+            for measurement in feederLoadMeasurements:
+                if measurement.measurementType == 'VA':
+                    if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                        self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                        self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                        self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
+        if not self.peak_va_measurements_A or not self.peak_va_measurements_B or not self.peak_va_measurements_C:
+            raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
+                               'feeder head transformer!')
+
     def on_measurement(self, sim: Simulation, timestamp: dict, measurements: dict) -> None:
+        if self.simulation is not None:
+            self.simulation.pause()
+        self.timestamp = timestamp
         total_loads = self.get_feeder_head_measurements(measurements)
         self.save_total_load_data(timestamp, total_loads)
+        for mrid in self.peak_va_measurements_A.keys():
+            measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_A[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "A", load.real, load.imag])
+        for mrid in self.peak_va_measurements_B.keys():
+            measurement = measurements.get(self.peak_va_measurements_B[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_B[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "B", load.real, load.imag])
+        for mrid in self.peak_va_measurements_C.keys():
+            measurement = measurements.get(self.peak_va_measurements_C[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_C[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "C", load.real, load.imag])
         if not self.has_batteries:
             return
         if self._count % 10 == 0:
@@ -471,12 +536,12 @@ class CarbonManagementApp(object):
             for batt in self.Battery:
                 name = self.Battery[batt]['name']
                 phases = self.Battery[batt]['phases']
-                data = [timestamp, name, phases]
+                data = [timestamp, batt, name, phases]
                 simulation_table_batteries.append(
                     [name, phases, self.Battery[batt]['P_inj'], self.Battery[batt]['soc']])
                 data.extend(self.Battery[batt]['P_inj'])
                 data.extend([self.Battery[batt]['soc']])
-                header=["time","battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+                header=["time","mrid", "battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
                 add_data_to_csv(self.model_results_path/"simulation_table.csv", data, header=header)
             print(f'\n.......Curren timestamp: {timestamp}.......\n')
             print('Simulation Table')
@@ -492,8 +557,54 @@ class CarbonManagementApp(object):
                 self._init_batt_diff.add_difference(unit, 'PowerElectronicsConnection.p',
                                                     - dispatch_values[unit]['p_batt'], 0.0)
                 msg = self._init_batt_diff.get_message()
+                with open(self.model_results_path/f"dispatch_{timestamp}.json", "w") as f:
+                    json.dump(msg, f, indent=4)
+
+                header = ["time", "mrid", "value"]
+                data = [timestamp, unit, -dispatch_values[unit]['p_batt']]
+                add_data_to_csv(self.model_results_path/"dispatches.csv", data)
                 self.gad_obj.send(self._publish_to_topic, json.dumps(msg))
+
         self._count += 1
+        if self.simulation is not None:
+            self.simulation.resume()
+
+
+def findFeederHeadPowerMeasurmentsObject(cimObj: object):
+    '''
+        Helper function to find feeder transformer
+    '''
+    if not isinstance(cimObj, cim.EnergySource):
+        raise TypeError('findFeederHeadPowerMeasurmentsObject(): cimObj must be an instance of cim.EnergySource!')
+    equipmentToCheck = [cimObj]
+    feederHeadLoadMeasurementsObject = None
+    i = 0
+    while not feederHeadLoadMeasurementsObject and i < len(equipmentToCheck):
+        equipmentToAdd = []
+        for eq in equipmentToCheck[i:]:
+            powerMeasurementsCount = 0
+            for meas in eq.Measurements:
+                if meas.measurementType == 'VA':
+                    powerMeasurementsCount += 1
+            if powerMeasurementsCount == 3:
+                feederHeadLoadMeasurementsObject = eq
+                break
+            else:
+                terminals = eq.Terminals
+                connectivityNodes = []
+                for t in terminals:
+                    if t.ConnectivityNode not in connectivityNodes:
+                        connectivityNodes.append(t.ConnectivityNode)
+                for cn in connectivityNodes:
+                    for t in cn.Terminals:
+                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
+                            equipmentToAdd.append(t.ConductingEquipment)
+        i = len(equipmentToCheck)
+        equipmentToCheck.extend(equipmentToAdd)
+    if not feederHeadLoadMeasurementsObject:
+        raise RuntimeError('findFeederPowerRating(): No feeder head object with power measurements could be found for '
+                           f'EnergySource, {cimObj.name}!')
+    return feederHeadLoadMeasurementsObject
 
 
 def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulation:
@@ -543,11 +654,11 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
         use_houses=False
     )
 
-    start = datetime(2024, 1, 1)
+    start = datetime(2023, 1, 1, 0, tzinfo=timezone.utc)
     epoch = datetime.timestamp(start)
-    duration = timedelta(minutes=7).total_seconds()
+    duration = timedelta(hours=24).total_seconds()
     # using hadrcode epoch to ensure afternoon time
-    epoch = 1704207000
+    # epoch = 1704207000
 
     sim_args = SimulationArgs(
         start_time=epoch,
@@ -555,10 +666,11 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
         simulator="GridLAB-D",
         timestep_frequency=1000,
         timestep_increment=1000,
-        run_realtime=True,
+        run_realtime=False,
         simulation_name=sim_name,
         power_flow_solver_method="NR",
-        model_creation_config=asdict(model_config)
+        model_creation_config=asdict(model_config),
+        pause_after_measurements=True,
     )
 
     sim_config = SimulationConfig(

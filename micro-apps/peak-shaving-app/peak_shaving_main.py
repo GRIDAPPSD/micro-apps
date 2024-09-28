@@ -544,11 +544,11 @@ class PeakShavingController(object):
         for source in energySources.values():
             feederPowerRating = findFeederPowerRating(source)
         self.peak_setpoint_A = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95))
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A + self.installed_battery_capacity_ABC/3)*0.95)
         self.peak_setpoint_B = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95))
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B + self.installed_battery_capacity_ABC/3)*0.95)
         self.peak_setpoint_C = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95))
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C + self.installed_battery_capacity_ABC/3)*0.95)
 
     def findFeederHeadLoadMeasurements(self):
         energySources = self.graph_model.graph.get(cim.EnergySource, {})
@@ -615,8 +615,6 @@ class PeakShavingController(object):
             measurement = measurements.get(self.controllable_batteries_ABC[mrid]['soc_measurement']['object'].mRID)
             if measurement is not None:
                 self.controllable_batteries_ABC[mrid]['soc_measurement']['value'] = measurement
-                print(measurement)
-            # print(self.controllable_batteries_ABC[mrid]['power_measurements'])
             header = ["time", "mrid", "battery", "p_a", "p_b", "p_c", "soc"]
             data = [self.timestamp, mrid, measDict['object'].name]
             data.extend(power_data_to_save)
@@ -663,6 +661,7 @@ class PeakShavingController(object):
         power_diff_A = 0.0
         power_diff_B = 0.0
         power_diff_C = 0.0
+        deadband_ABC = True
         if real_load_A > self.peak_setpoint_A:
             power_diff_A = real_load_A - self.peak_setpoint_A
         elif real_load_A < self.base_setpoint_A:
@@ -678,13 +677,15 @@ class PeakShavingController(object):
         min_power_diff = min(power_diff_A, power_diff_B, power_diff_C)
         max_power_diff = max(power_diff_A, power_diff_B, power_diff_C)
         if min_power_diff > 1e-6:
+            deadband_ABC = False
             control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
-            print(f"discharging control dict: {control_dict}")
+            print(f"discharging control dict: {control_dict.keys()}")
             self.desired_setpoints.update(control_dict)
             power_diff_A -= actual_power / 3.0
             power_diff_B -= actual_power / 3.0
             power_diff_C -= actual_power / 3.0
         elif max_power_diff < -1e-6:
+            deadband_ABC = False
             control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
             print(f"charging control dict: {control_dict.keys()}")
             self.desired_setpoints.update(control_dict)
@@ -709,6 +710,27 @@ class PeakShavingController(object):
         elif power_diff_C < -1e-6:
             control_dict = self.calc_batt_charge_C(abs(power_diff_C), upper_limit)
             self.desired_setpoints.update(control_dict)
+        if deadband_ABC:
+            for batt_id in self.controllable_batteries_ABC.keys():
+                measurements = self.controllable_batteries_ABC[batt_id]['power_measurements']
+                mag = []
+                ang_in_deg = []
+                for measurement in measurements:
+                    if measurement.get('value') is None:
+                        break
+                    mag.append(measurement.get('value', {}).get('magnitude'))
+                    ang_in_deg.append(measurement.get('value', {}).get('angle'))
+                if (not mag) or (not ang_in_deg) or (None in mag) or (None in ang_in_deg):
+                    continue
+                current_power = 0.0
+                for i in range(len(mag)):
+                    current_power += mag[i] * math.cos(math.radians(ang_in_deg[i]))
+                if (abs(current_power) > 1e-6):
+                    self.desired_setpoints[batt_id] = {
+                        'object': self.controllable_batteries_ABC[batt_id]['object'],
+                        'old_setpoint': current_power,
+                        'setpoint': 0.0
+                    }
         if self.desired_setpoints:
             self.send_setpoints()
 
@@ -848,7 +870,7 @@ class PeakShavingController(object):
             new_power = (power_to_discharge_ABC /
                          available_capacity_ABC) * self.controllable_batteries_ABC[batt_id]['maximum_power']
             new_power = min(new_power, self.controllable_batteries_ABC[batt_id]['maximum_power'])
-            if abs(new_power - current_power) > 1.0e6:
+            if abs(new_power - current_power) > 1.0e-6:
                 return_dict[batt_id] = {
                     'object': self.controllable_batteries_ABC[batt_id]['object'],
                     'old_setpoint': current_power,
@@ -1371,7 +1393,7 @@ class PeakShavingController(object):
                     f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
                     'object.')
         setpointMessage = self.differenceBuilder.get_message()
-        self.gad_obj.send(self.setpoints_topic, setpointMessage)
+        self.gad_obj.send(self.setpoints_topic, json.dumps(setpointMessage))
 
     def simulation_completed(self, sim: Simulation):
         self.log.info(f'Simulation for PeakShavingController:{self.id} has finished. This application '
@@ -1426,11 +1448,21 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     #     m_id = m.get('modelId')
     #     app_instances['field_instances'][m_id] = PeakShavingController(gad_object, m_id)
     for sim_id, m_id in platform_simulations.items():
-        app_instances['external_simulation_instances'][sim_id] = PeakShavingController(gad_object, m_id, sim_id=sim_id)
+        app_instances['external_simulation_instances'][sim_id] = PeakShavingController(
+            gad_object,
+            m_id,
+            sim_id=sim_id,
+            peak_setpoint = 0.35e6*3,
+            base_setpoint = 0.2e6*3,
+        )
     for m_id, simulation in local_simulations.items():
-        app_instances['local_simulation_instances'][m_id] = PeakShavingController(gad_object,
-                                                                                  m_id,
-                                                                                  simulation=simulation)
+        app_instances['local_simulation_instances'][m_id] = PeakShavingController(
+            gad_object,
+            m_id,
+            peak_setpoint = 0.35e6*3,
+            base_setpoint = 0.2e6*3,
+            simulation=simulation
+        )
     app_instances_exist = False
     if len(app_instances['field_instances']) > 0:
         app_instances_exist = True

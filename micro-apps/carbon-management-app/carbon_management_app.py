@@ -182,7 +182,7 @@ class CarbonManagementApp(object):
             writer.writerow(header)
         with open(self.model_results_path / "simulation_table.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
-            header=["time","mrid", "battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+            header=["time","mrid", "battery","phases","p_a","p_b","p_c","soc"]
             writer.writerow(header)
         with open(self.model_results_path / "dispatches.csv", mode='a', newline='') as file:
             writer = csv.writer(file)
@@ -541,7 +541,7 @@ class CarbonManagementApp(object):
                     [name, phases, self.Battery[batt]['P_inj'], self.Battery[batt]['soc']])
                 data.extend(self.Battery[batt]['P_inj'])
                 data.extend([self.Battery[batt]['soc']])
-                header=["time","mrid", "battery","phases","p_batt_a","p_batt_b","p_batt_c","soc"]
+                header=["time","mrid", "battery","phases","p_a","p_b","p_c","soc"]
                 add_data_to_csv(self.model_results_path/"simulation_table.csv", data, header=header)
             print(f'\n.......Curren timestamp: {timestamp}.......\n')
             print('Simulation Table')

@@ -1,10 +1,12 @@
 import importlib
+import logging
 import math
 import os
-import logging
+import csv
+from pathlib import Path
+from cmath import exp
 from argparse import ArgumentParser
 from datetime import datetime, timezone, timedelta
-from pickle import FALSE
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -17,11 +19,7 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 from opendssdirect import dss
-import csv
-from pathlib import Path
-import cimgraph.data_profile.rc4_2021 as cim
-from cmath import exp
-# cim = None
+
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
 ieee123_apps_mrid = "_F49D1288-9EC6-47DB-8769-57E2B6EDB124"
@@ -32,47 +30,14 @@ ieee123_apps_feeder_head_measurement_mrids = [
 ]
 
 logging.basicConfig(format='%(asctime)s::%(levelname)s::%(name)s::%(filename)s::%(lineno)d::%(message)s',
-                    filename='cvr_main.log',
+                    filename='cvr.log',
                     filemode='w',
-                    level=logging.DEBUG,
+                    level=logging.INFO,
                     encoding='utf-8')
 logger = logging.getLogger(__name__)
-
-def findFeederTransformer(cimObj):
-    '''
-        Helper function to find feeder transformer
-    '''
-    if not isinstance(cimObj, cim.EnergySource):
-        raise TypeError('findFeederTransformer(): cimObj must be an instance of cim.EnergySource!')
-    equipmentToCheck = [cimObj]
-    xfmr = None
-    feederPowerRating = None
-    i = 0
-    while not xfmr and i < len(equipmentToCheck):
-        equipmentToAdd = []
-        for eq in equipmentToCheck[i:]:
-            if isinstance(eq, cim.PowerTransformer):
-                xfmr = eq
-                break
-            else:
-                terminals = eq.Terminals
-                connectivityNodes = []
-                for t in terminals:
-                    if t.ConnectivityNode not in connectivityNodes:
-                        connectivityNodes.append(t.ConnectivityNode)
-                for cn in connectivityNodes:
-                    for t in cn.Terminals:
-                        if t.ConductingEquipment not in equipmentToCheck and t.ConductingEquipment not in equipmentToAdd:
-                            equipmentToAdd.append(t.ConductingEquipment)
-        i = len(equipmentToCheck)
-        equipmentToCheck.extend(equipmentToAdd)
-    if not xfmr:
-        raise RuntimeError('findFeederPowerRating(): No feeder head transformer could be found for EnergySource, '
-                           f'{cimObj.name}!')
-    powerTransformerEnds = xfmr.PowerTransformerEnd
-    if not powerTransformerEnds:
-        raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
-    return xfmr
+cim = None
+DB_CONNECTION = None
+CIM_GRAPH_MODELS = {}
 
 
 class ConservationVoltageReductionController(object):
@@ -136,7 +101,7 @@ class ConservationVoltageReductionController(object):
                 Returns: NA.
             cvr_control(): This is the main function for performing the cvr control.
     """
-    period = 60
+    period = 3600
     lower_voltage_limit_pu = 0.9
     max_violation_time = 300
 
@@ -195,11 +160,10 @@ class ConservationVoltageReductionController(object):
             self.simulation_id = simulation.simulation_id
             self.simulation.add_onmeasurement_callback(self.on_measurement)
         if sim_id is None:
-            self.measurements_topic = topics.field_output_topic(None, sim_id)
+            self.measurements_topic = topics.field_output_topic(None, None)
         else:
             self.simulation_id = sim_id
             self.measurements_topic = topics.simulation_output_topic(sim_id)
-        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.gad_obj = gad_obj
         self.log = self.gad_obj.get_logger()
         if self.measurements_topic:
@@ -210,15 +174,6 @@ class ConservationVoltageReductionController(object):
             self.setpoints_topic = topics.field_input_topic()
         # Read model_id from cimgraph to get all the controllable regulators and capacitors, and measurements.
         self.graph_model = buildGraphModel(model_id)
-        # print("source bus")
-        # energy_sources = self.graph_model.graph.get(cim.EnergySource, {})
-        # for source_mrid, source in energy_sources.items():
-        #     self.source = source
-        #     print(source_mrid)
-        #     terminals = source.Terminals
-        #     self.source_bus = terminals[0].ConnectivityNode
-        #     self.source_mrid = terminals[0].ConnectivityNode.mRID
-        #     print(self.source_bus.name)
         self.findFeederHeadLoadMeasurements()
         # Store controllable_capacitors
         self.controllable_capacitors = self.graph_model.graph.get(cim.LinearShuntCompensator, {})
@@ -253,14 +208,6 @@ class ConservationVoltageReductionController(object):
                         self.controllable_regulators[mRID]['RatioTapChangers'].append(transformerEnd.RatioTapChanger)
                         self.controllable_regulators[mRID]['PhasesToName'][transformerEnd.phases.value] = \
                             transformerTank.name
-        # self.source_device = None
-        # for terminal in self.source_bus.Terminals:
-        #     for measurement in terminal.Measurements:
-        #         if measurement.measurementType == "VA":
-        #             mrid = measurement.mRID
-        #             phase = measurement.phases.value
-        #             self.source_measurements[phase] = {'measurement_object': measurement, 'measurement_value': None}
-        #             pass
 
         # Store measurements of voltages, loads, pv, battery, capacitor status, regulator taps, switch states.
         # print(self.controllable_regulators.keys())
@@ -268,6 +215,7 @@ class ConservationVoltageReductionController(object):
         measurements.update(self.graph_model.graph.get(cim.Analog, {}))
         measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
 
+        # print(measurements.keys())
         for meas in measurements.values():
             if meas.measurementType == 'PNV':    # it's a voltage measurement. store it.
                 mrid = meas.mRID
@@ -304,12 +252,14 @@ class ConservationVoltageReductionController(object):
         self.init_output_file()
         if self.simulation is not None:
             self.simulation.start_simulation()
+            self.simulation_id = self.simulation.simulation_id
+        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
         self.dssContext = dss.NewContext()
         self.create_opendss_context()
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
-
+        self.measurementTime = -1
 
     def init_output_file(self):
         for child in self.model_results_path.iterdir():
@@ -354,14 +304,16 @@ class ConservationVoltageReductionController(object):
         return total_loads
 
     def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
-
-        # if self.simulation is not None:
-        #     self.simulation.pause()
         self.timestamp = timestamp
         self.desired_setpoints.clear()
-        self.log.info(f"entering on_measurement with timestamp={timestamp}")
-        # total_loads = self.get_feeder_head_measurements(measurements)
-        # self.save_total_load_data(timestamp, total_loads)
+        if isinstance(sim, Simulation):
+            self.setpoints_topic = topics.simulation_input_topic(sim.simulation_id)
+            self.simulation.pause()
+        elif self.simulation_id:
+            self.setpoints_topic = topics.simulation_input_topic(self.simulation_id)
+        else:
+            self.setpoints_topic = topics.field_input_topic()
+
 
         for mrid in self.peak_va_measurements_A.keys():
             measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
@@ -390,64 +342,64 @@ class ConservationVoltageReductionController(object):
                 if ((mag is not None) and (ang_in_deg is not None)):
                     load = mag * exp(1j*math.radians(ang_in_deg))
                     add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "C", load.real, load.imag])
+
         for mrid in self.pnv_measurements.keys():
             meas = measurements.get(mrid)
             if meas is not None:
-                self.pnv_measurements[mrid]['measurement_value'] = meas  # phase to neutral voltage
+                self.pnv_measurements[mrid]['measurement_value'] = meas
         for psr_mrid in self.va_measurements.keys():
-            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys(): # s (volt-amps)
+            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
         for psr_mrid in self.pos_measurements.keys():
-            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():  # capacitor status and tap positions
+            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
                 meas = measurements.get(mrid)
                 if meas is not None:
                     self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
-                    name = self.pos_measurements[psr_mrid]['measurement_objects'][mrid].name
-                    phases = self.pos_measurements[psr_mrid]['measurement_objects'][mrid].phases.value
-                    data = [timestamp, mrid, name, phases, meas["value"]]
-                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, cim.PowerTransformer):
-                        add_data_to_csv(self.model_results_path/"reg_meas.csv", data)
-                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, cim.LinearShuntCompensator):
-                        add_data_to_csv(self.model_results_path / "cap_meas.csv", data)
-
-        self.calculate_per_unit_voltage()
-        self.save_voltage_data(timestamp)
-        self.update_opendss_with_measurements()
-        logger.info(f"timestep {timestamp} -- next_control_time: {self.next_control_time}")
-
-        if int(timestamp) > self.next_control_time:
-            logger.info("int(timestamp) > self.next_control_time")
-            self.cvr_control()
-            self.next_control_time = int(timestamp) + self.period
-            self.voltage_violation_time = -1
-        else:
-            logger.info("int(timestamp) <= self.next_control_time")
-            total_violation_time = 0
-            voltage_violation_phases = ''
-            for mrid, val in self.pnv_measurements_pu.items():
-                if val is not None:
-                    if val < self.low_volt_lim:
-                        if self.voltage_violation_time < 0:
-                            self.voltage_violation_time = int(timestamp)
-                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
-                            if isinstance(meas, cim.Measurement):
-                                measPhase = meas.phases
-                                if measPhase in [
-                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
-                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
-                                ]:
-                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
-                                if measPhase.value not in voltage_violation_phases:
-                                    voltage_violation_phases += measPhase.value
-                        else:
-                            total_violation_time = int(timestamp) - self.voltage_violation_time
-                        break
-            if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                self.cvr_control(voltage_violation_phases)
-                self.voltage_violation_time = int(timestamp)
-        if self.simulation is not None:
+                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, (cim.LinearShuntCompensator, cim.PowerTransformer)):
+                        pos_measurement_debug_data = {
+                            "object_type": f"{type(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource).__name__}",
+                            "name": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource.name,
+                            "phase": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].phases.value,
+                            "value": int(meas.get("value")),
+                            "timestamp": timestamp
+                        }
+                        logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
+        if (self.measurementTime < 0):
+            self.measurementTime = int(timestamp)
+            self.calculate_per_unit_voltage()
+            self.save_voltage_data(timestamp)
+            self.update_opendss_with_measurements()
+            if int(timestamp) > self.next_control_time:
+                self.cvr_control()
+                self.next_control_time = int(timestamp) + self.period
+                self.voltage_violation_time = -1
+            else:
+                total_violation_time = 0
+                voltage_violation_phases = ''
+                for mrid, val in self.pnv_measurements_pu.items():
+                    if val is not None:
+                        if val < self.low_volt_lim:
+                            if self.voltage_violation_time < 0:
+                                self.voltage_violation_time = int(timestamp)
+                                meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                                if isinstance(meas, cim.Measurement):
+                                    measPhase = meas.phases
+                                    if measPhase in [
+                                            cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                            cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                    ]:
+                                        measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                    if measPhase.value not in voltage_violation_phases:
+                                        voltage_violation_phases += measPhase.value
+                            else:
+                                total_violation_time = int(timestamp) - self.voltage_violation_time
+                            break
+                if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                    self.cvr_control(voltage_violation_phases)
+                    self.voltage_violation_time = int(timestamp)
+        if isinstance(sim, Simulation):
             self.simulation.resume()
 
     def findFeederHeadLoadMeasurements(self):
@@ -485,7 +437,7 @@ class ConservationVoltageReductionController(object):
             if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
                 self.log.error(f'The cim.Measurement object {mrid} associated with this measurement value is missing! '
                                'It will be ignored in cvr control.')
-                logger.info(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
+                logger.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
                 continue
             if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
                 meas_base = float(meas_obj.PowerSystemResource.ratedU)
@@ -499,22 +451,31 @@ class ConservationVoltageReductionController(object):
                             if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
                                 meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
                             else:
-                                self.log.error(f'meas_term.TransformerEnd[0].BaseVoltage is None')
+                                self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
+                                                f'{meas_term.ConnectivityNode.name} is None')
                     elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
                         if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
                             meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
                         else:
-                            logger.info(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                            logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
                     else:
-                        logger.info(f'meas_term.ConductingEquipment is None')
-            # print(f'base voltage is {meas_base}V')
+                        logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
-                logger.info('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
-                      f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
+                logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                             f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
-            # self.pnv_measurements[mrid] = meas_value
-            self.pnv_measurements_pu[mrid] = meas_value * math.sqrt(3.0) / meas_base
+            pnv_meta_data = {'measured PNV': meas_value, 'measured LLV': meas_value * math.sqrt(3.0), 'rated V': meas_base}
+            pu_vals = [meas_value / meas_base, meas_value * math.sqrt(3.0) / meas_base]
+            diff = max(pu_vals)
+            for i in range(len(pu_vals)):
+                if abs(1.0-pu_vals[i]) < diff:
+                    diff = abs(1.0-pu_vals[i])
+                    self.pnv_measurements_pu[mrid] = pu_vals[1]
+            pnv_meta_data['pu V'] = self.pnv_measurements_pu[mrid]
+            logger.info(f'Voltage meta data for {meas_obj.Terminal.ConnectivityNode.name}:{json.dumps(pnv_meta_data,indent=4)}')
 
     def save_total_load_data(self, time, total_loads):
         file_path = self.model_results_path/"total_load.csv"
@@ -552,7 +513,7 @@ class ConservationVoltageReductionController(object):
             },
             'resultFormat': 'JSON'
         }
-        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=120)
+        base_dss_response = self.gad_obj.get_response(topics.CONFIG, message, timeout=60)
         base_dss_dict = json.loads(base_dss_response.get('message', ''), strict=False)
         base_dss_str = base_dss_dict.get('data', '')
         fileDir = Path(__file__).parent / 'cvr_app_instances' / f'{self.id}' / 'master.dss'
@@ -563,11 +524,8 @@ class ConservationVoltageReductionController(object):
         self.dssContext.Command(f'Redirect {fileDir}')
         self.dssContext.Command(f'Compile {fileDir}')
         self.dssContext.Solution.SolveNoControl()
-        converged = self.dssContext.Solution.Converged()
-        if converged:
-            logger.info(f'Base powerflow converged.')
-        else:
-            logger.error(f"Base powerflow did not converge!")
+        if not self.dssContext.Solution.Converged():
+            raise RuntimeError("Internal OpenDSS model fails to converge!")
 
     def update_opendss_with_measurements(self):
         for psr_mrid in self.va_measurements.keys():
@@ -586,13 +544,37 @@ class ConservationVoltageReductionController(object):
                 meas_obj = self.va_measurements[psr_mrid]['measurement_objects'][meas_mrid].PowerSystemResource
                 name = meas_obj.name
                 if isinstance(meas_obj, cim.EnergyConsumer):
+                    load = self.dssContext.Loads.First()
+                    while load:
+                        if self.dssContext.Loads.Name() == name:
+                            break
+                        else:
+                            load = self.dssContext.Loads.Next()
+                    old_val = complex(self.dssContext.Loads.kW(), self.dssContext.Loads.kvar())
                     self.dssContext.Command(f'Load.{name}.kw={va_val.real}')
                     self.dssContext.Command(f'Load.{name}.kvar={va_val.imag}')
+                    logger.info(f'Changing load, {name}.\nOld: {old_val}\nNew: '
+                          f'{complex(self.dssContext.Loads.kW(), self.dssContext.Loads.kvar())}')
                 elif isinstance(meas_obj, cim.PowerElectronicsConnection):
-                    if isinstance(meas_obj.PowerElectronicsUnit, cim.PhotovoltaicUnit):
+                    if isinstance(meas_obj.PowerElectronicsUnit[0], cim.PhotovoltaicUnit):
+                        pv = self.dssContext.PVsystems.First()
+                        while pv:
+                            if self.dssContext.PVsystems.Name() == name:
+                                break
+                            else:
+                                pv = self.dssContext.PVsystems.Next()
+                        old_val = complex(self.dssContext.PVsystems.kW(), self.dssContext.PVsystems.kvar())
                         self.dssContext.Command(f'PVSystem.{name}.pmpp={va_val.real}')
                         self.dssContext.Command(f'PVSystem.{name}.kvar={va_val.imag}')
-                    elif isinstance(meas_obj.PowerElectronicsUnit, cim.BatteryUnit):
+                        logger.info(f'Changing PV, {name}.\nOld: {old_val}\nNew: '
+                            f'{complex(self.dssContext.PVsystems.kW(), self.dssContext.PVsystems.kvar())}')
+                    elif isinstance(meas_obj.PowerElectronicsUnit[0], cim.BatteryUnit):
+                        batt = self.dssContext.Storages.First()
+                        while batt:
+                            if self.dssContext.Storages.Name() == name:
+                                break
+                            else:
+                                batt = self.dssContext.Storages.Next()
                         self.dssContext.Command(f'Storage.{name}.kw={va_val.real}')
                         self.dssContext.Command(f'Storage.{name}.kvar={va_val.imag}')
                     #TODO: update wind turbines in opendss
@@ -605,7 +587,7 @@ class ConservationVoltageReductionController(object):
             for meas_mrid in key_list:
                 meas_val = self.pos_measurements[psr_mrid]['measurement_values'][meas_mrid]
                 if meas_val is not None:
-                    pos_val[key_list.index(meas_mrid)] = meas_val.get('value')
+                    pos_val[key_list.index(meas_mrid)] = int(meas_val.get('value'))
                 else:
                     val_is_valid = False
                     break
@@ -616,11 +598,30 @@ class ConservationVoltageReductionController(object):
                 if isinstance(meas_obj, cim.Switch):
                     switch_state = sum(pos_val)
                     if switch_state == 0:
-                        self.dssContext.Command(f'close Line.{name} 1')
-                    else:
+                        logger.info(f'Opening switch {name}')
                         self.dssContext.Command(f'open Line.{name} 1')
+                    else:
+                        logger.info(f'Closing switch {name}')
+                        self.dssContext.Command(f'close Line.{name} 1')
                 elif isinstance(meas_obj, cim.LinearShuntCompensator):
-                    self.dssContext.Command(f'Capacitor.{name}.states={pos_val}')
+                    cap = self.dssContext.Capacitors.First()
+                    while cap:
+                        if self.dssContext.Capacitors.Name() == name:
+                            break
+                        else:
+                            cap = self.dssContext.Capacitors.Next()
+                    if not cap:
+                        logger.error(f'There is no capacitor with the name {name} in the OpenDSS model!')
+                        self.log.error(f'There is no capacitor with the name {name} in the OpenDSS model!')
+                    else:
+                        capacitor_state = sum(pos_val)
+                        if capacitor_state == 0:
+                            logger.info(f'Disengaging shunt capacitor.')
+                            self.dssContext.Capacitors.Open()
+                        else:
+                            logger.info(f'Engaging shunt capacitor.')
+                            self.dssContext.Capacitors.Close()
+                        # self.dssContext.Command(f'Capacitor.{name}.states={pos_val}')
                 if isinstance(meas_obj, cim.PowerTransformer):
                     name = self.controllable_regulators.get(psr_mrid, {}).get('PhasesToName', {}).get(meas_phase)
                     if name is not None:
@@ -638,9 +639,11 @@ class ConservationVoltageReductionController(object):
                                                  / self.dssContext.Transformers.NumTaps()
                             tapStep = 1.0 + (pos_val[0] * regulationPerStep)
                             self.dssContext.Command(f'Transformer.{name}.Taps=[1.0, {tapStep}]')
+        self.dssContext.Solution.SolveNoControl()
+        if not self.dssContext.Solution.Converged():
+            raise RuntimeError("Internal OpenDSS model fails to converge after updating with measurements!")
 
     def cvr_control(self, phases: str = None):
-        logger.info("enter cvr_control()")
         capacitor_list = []
         for cap_mrid, cap in self.controllable_capacitors.items():
             cap_meas_dict = self.pos_measurements.get(cap_mrid)
@@ -713,20 +716,20 @@ class ConservationVoltageReductionController(object):
                     cap = self.dssContext.Capacitors.Next()
             if cap:
                 saved_states = self.dssContext.Capacitors.States()
-                logger.info(f'saved states:{saved_states}')
             else:
-                saved_states = [0]
-            self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
-            self.dssContext.Solution.SolveNoControl()
-            converged = self.dssContext.Solution.Converged()
-            if converged:
-                logger.info(f'Powerflow converged when closing cap {cap_mrid}.')
-                return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
-                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                    logger.info(f'Voltage violations were eliminated when closing cap {cap_mrid}.')
-                    success = True
-            else:
-                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+                saved_states = [1]
+            if saved_states[0] != pos_val[0]:
+                self.dssContext.Capacitors.Close()
+                self.dssContext.Solution.SolveNoControl()
+                converged = self.dssContext.Solution.Converged()
+                if converged:
+                    logger.info(f'Powerflow converged when closing cap {cap_mrid}.')
+                    return_dict[cap_mrid] = {'setpoint': 1, 'object': cap_obj}
+                    if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                        logger.info(f'Voltage violations were eliminated when closing cap {cap_mrid}.')
+                        success = True
+                else:
+                    self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
         return return_dict
 
     def decrease_voltage_capacitor(self, cap_list: list) -> dict:
@@ -749,20 +752,21 @@ class ConservationVoltageReductionController(object):
                 saved_states = self.dssContext.Capacitors.States()
                 logger.info(f'saved states:{saved_states}')
             else:
-                saved_states = [1]
-            self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
-            self.dssContext.Solution.SolveNoControl()
-            converged = self.dssContext.Solution.Converged()
-            success = False
-            if converged:
-                logger.info(f'Powerflow converged when opening cap {cap_mrid}.')
-                if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
-                    logger.info(f'Opening cap {cap_mrid} caused no voltage violations.')
-                    return_dict[cap_mrid] = {'setpoint': 0, 'object': cap_obj}
-                    success = True
-            if not success:
-                logger.info(f'Opening cap {cap_mrid} caused voltage violations or powerflow did not converge.')
-                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
+                saved_states = [0]
+            if saved_states[0] != pos_val[0]:
+                self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={pos_val}')
+                self.dssContext.Solution.SolveNoControl()
+                converged = self.dssContext.Solution.Converged()
+                success = False
+                if converged:
+                    logger.info(f'Powerflow converged when opening cap {cap_mrid}.')
+                    if min(self.dssContext.Circuit.AllBusMagPu()) > self.low_volt_lim:
+                        logger.info(f'Opening cap {cap_mrid} caused no voltage violations.')
+                        return_dict[cap_mrid] = {'setpoint': 0, 'object': cap_obj}
+                        success = True
+                if not success:
+                    logger.info(f'Opening cap {cap_mrid} caused voltage violations or powerflow did not converge.')
+                    self.dssContext.Command(f'Capacitor.{cap_obj.name}.states={saved_states}')
         logger.info(f'return_dict length: {len(return_dict)}')
         return return_dict
 
@@ -801,7 +805,7 @@ class ConservationVoltageReductionController(object):
                             newSetpointRatio[j] = oldSetpointRatio[j]
                         minTapRatio = self.dssContext.Transformers.MinTap()
                         rtpCurrentTap = newSetpointRatio[j]
-                        tapStep = float(rtp.step)
+                        tapStep = float(rtp.stepVoltageIncrement) / 100.0
                         if rtpCurrentTap <= minTapRatio:
                             break
                         self.dssContext.Transformers.Tap(rtpCurrentTap - tapStep)
@@ -819,8 +823,8 @@ class ConservationVoltageReductionController(object):
                                     }
                                 else:
                                     return_dict[rtp.mRID]['setpoint'] = tapRatioToTapPosition(
-                                        rtpCurrentTap + tapStep, rtp)
-                                rtpCurrentTap = rtpCurrentTap + tapStep
+                                        rtpCurrentTap - tapStep, rtp)
+                                rtpCurrentTap = rtpCurrentTap - tapStep
                                 newSetpointRatio[j] = rtpCurrentTap
                             else:
                                 stopDecrease[j] = True
@@ -869,7 +873,7 @@ class ConservationVoltageReductionController(object):
                             newSetpointRatio[j] = oldSetpointRatio[j]
                         maxTapRatio = self.dssContext.Transformers.MaxTap()
                         rtpCurrentTap = newSetpointRatio[j]
-                        tapStep = float(rtp.step)
+                        tapStep = float(rtp.stepVoltageIncrement) / 100.0
                         if rtpCurrentTap >= maxTapRatio:
                             break
                         self.dssContext.Transformers.Tap(rtpCurrentTap + tapStep)
@@ -900,30 +904,50 @@ class ConservationVoltageReductionController(object):
         return turnsRatio
 
     def send_setpoints(self):
-        logger.info("enter send_setpoints()")
         self.differenceBuilder.clear()
         for mrid, dictVal in self.desired_setpoints.items():
             cimObj = dictVal.get('object')
             newSetpoint = dictVal.get('setpoint')
             oldSetpoint = dictVal.get('old_setpoint')
             if isinstance(cimObj, cim.LinearShuntCompensator):
-
-                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint[0],
-                                                      int(not newSetpoint[0]))
-                data = [self.timestamp, mrid, "", "", newSetpoint[0]]
+                phases = ""
+                for shuntCompensatorPhase in cimObj.ShuntCompensatorPhase:
+                    phases += shuntCompensatorPhase.phase.value
+                if not phases:
+                    phases = "ABC"
+                pos_setpoint_command_debug_data = {
+                    "object_type": f"{type(cimObj).__name__}",
+                    "name": cimObj.name,
+                    "phase": phases,
+                    "value": newSetpoint
+                }
+                logger.info(f"Pos Setpoint Change: {json.dumps(pos_setpoint_command_debug_data)}")
+                self.differenceBuilder.add_difference(mrid, 'ShuntCompensator.sections', newSetpoint,
+                                                      int(not newSetpoint))
+                data = [self.timestamp, mrid, "", "", newSetpoint]
                 add_data_to_csv(self.model_results_path/"caps.csv", data=data)
             elif isinstance(cimObj, cim.RatioTapChanger):
-                tapChangersList = self.controllable_regulators.get(cim.PowerTransformer.mRID,
-                                                                   {}).get('RatioTapChangers', [])
-                for rtp in tapChangersList:
-                    self.differenceBuilder.add_difference(rtp.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
-                    data = [self.timestamp, mrid, "", "", newSetpoint]
-                    add_data_to_csv(self.model_results_path/"regs.csv", data=data)
+                phases = ""
+                if isinstance(cimObj.TransformerEnd, cim.PowerTransformerEnd):
+                    phases = "ABC"
+                else:
+                    phases = cimObj.TransformerEnd.phases.value
+                pos_setpoint_command_debug_data = {
+                    "object_type": f"{type(cimObj).__name__}",
+                    "name": cimObj.name,
+                    "phase": phases,
+                    "value": newSetpoint
+                }
+                logger.info(f"Pos Setpoint Change: {json.dumps(pos_setpoint_command_debug_data)}")
+                self.differenceBuilder.add_difference(cimObj.mRID, 'TapChanger.step', newSetpoint, oldSetpoint)
+                data = [self.timestamp, mrid, "", "", newSetpoint]
+                add_data_to_csv(self.model_results_path/"regs.csv", data=data)
             else:
                 self.log.warning(f'The CIM object with mRID, {mrid}, is not a cim.LinearShuntCompensator or a '
                                  f'cim.PowerTransformer. The object is a {type(cimObj)}. This application will ignore '
                                  'sending a setpoint to this object.')
-        setpointMessage = self.differenceBuilder.get_message()
+        setpointMessage = json.dumps(self.differenceBuilder.get_message(), indent=4, sort_keys=True)
+        logger.info(f"send_setpoint():\ntopic: {self.setpoints_topic}\nmessage: {type(setpointMessage)}")
         self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
@@ -1043,8 +1067,8 @@ def tapPositionToTapRatio(tapPosition: int, ratioTapChanger) -> float:
         raise TypeError('tapPositionToTapRatio(): ratioTapChanger must be a cim.RatioTapChanger.')
     maxTapPosition = int(ratioTapChanger.highStep)
     minTapPosition = int(ratioTapChanger.lowStep)
-    neutralTapPosition = int(ratioTapChanger.nuetralStep)
-    stepRatio = float(ratioTapChanger.step)
+    neutralTapPosition = int(ratioTapChanger.neutralStep)
+    stepRatio = float(ratioTapChanger.stepVoltageIncrement) / 100.0
     if tapPosition > maxTapPosition or tapPosition < minTapPosition:
         raise ValueError('tapPostionToTapRatio(): tapPosition must be within the maximum and minimum tap positions of '
                          'the ratioTapChanger!')
@@ -1062,8 +1086,8 @@ def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
         raise TypeError('tapRatioToTapPosition(): ratioTapChanger must be a cim.RatioTapChanger.')
     maxTapPosition = int(ratioTapChanger.highStep)
     minTapPosition = int(ratioTapChanger.lowStep)
-    neutralTapPosition = int(ratioTapChanger.nuetralStep)
-    stepRatio = float(ratioTapChanger.step)
+    neutralTapPosition = int(ratioTapChanger.neutralStep)
+    stepRatio = float(ratioTapChanger.stepVoltageIncrement) / 100.0
     if tapPositionRatio > tapPositionToTapRatio(maxTapPosition,
                                                 ratioTapChanger) or tapPositionRatio < tapPositionToTapRatio(
                                                     minTapPosition, ratioTapChanger):
@@ -1071,7 +1095,10 @@ def tapRatioToTapPosition(tapPositionRatio: float, ratioTapChanger) -> float:
                          'positions of the ratioTapChanger!')
     if neutralTapPosition is None:
         neutralTapPosition = 0
-    tapPosition = math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5) + neutralTapPosition
+    if tapPositionRatio < 1.0:
+        tapPosition = neutralTapPosition - math.floor(((1.0 - tapPositionRatio) / stepRatio) + 0.5)
+    else:
+        tapPosition = neutralTapPosition + math.floor(((tapPositionRatio - 1.0) / stepRatio) + 0.5)
     if tapPosition > maxTapPosition:
         tapPosition = maxTapPosition
     elif tapPosition < minTapPosition:
@@ -1141,14 +1168,12 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     start = datetime(2023, 1, 1, 0, tzinfo=timezone.utc)
     epoch = datetime.timestamp(start)
     duration = timedelta(hours=24).total_seconds()
-    # start_time = 1726081200  # 9/11/2024 12:00:00 PDT
     sim_args = SimulationArgs(
         start_time=epoch,
         duration=duration,
-        # duration=60*60,
         simulation_name=sim_name,
         run_realtime=False,
-        pause_after_measurements=True)
+        pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -1199,11 +1224,10 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
     if not isinstance(model_id, str) and model_id is not None:
         raise TypeError(
             f'The model id passed to the convervation voltage reduction application must be a string type or {None}.')
-    # global cim, DB_CONNECTION
-    global DB_CONNECTION
+    global cim, DB_CONNECTION
     cim_profile = 'rc4_2021'
     iec61970_301 = 7
-    # cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
+    cim = importlib.import_module(f'cimgraph.data_profile.{cim_profile}')
     # params = ConnectionParameters(cim_profile=cim_profile, iec61970_301=iec61970_301)
     # DB_CONNECTION = GridappsdConnection(params)
     params = ConnectionParameters(url='http://localhost:8889/bigdata/namespace/kb/sparql',
@@ -1324,4 +1348,3 @@ if __name__ == '__main__':
                         help='Flag to disable control on startup by default.')
     args = parser.parse_args()
     main(args.disable_control, args.start_simulations, args.model_id)
-

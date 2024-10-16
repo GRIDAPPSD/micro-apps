@@ -622,7 +622,9 @@ class PeakShavingController(object):
                 continue
 
             meas_term = meas_obj.Terminal
-            if isinstance(meas_term, cim.Terminal):
+            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
+                meas_base = float(meas_obj.PowerSystemResource.ratedU)
+            elif isinstance(meas_term, cim.Terminal):
                 if meas_term.TransformerEnd:
                     if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
                         meas_base = float(meas_term.TransformerEnd[0].ratedU)
@@ -643,7 +645,7 @@ class PeakShavingController(object):
                     logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
-                logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                logger.error('Voltage Measurement has no associated nominal Voltage.\nMeasurement: '
                              f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
             pnv_meta_data = {'measured PNV': meas_value, 'measured LLV': meas_value * math.sqrt(3.0), 'rated V': meas_base}

@@ -259,6 +259,7 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
+        self.isFirstRun = True
 
     def init_output_file(self):
         for child in self.model_results_path.iterdir():
@@ -394,6 +395,8 @@ class ConservationVoltageReductionController(object):
                             total_violation_time = int(timestamp) - self.voltage_violation_time
                         break
             if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                if voltage_violation_phases is None:
+                    logger.info(f"voltage_violation_phases is None: phase of voltage violation could not be found.")
                 self.cvr_control(voltage_violation_phases)
                 self.voltage_violation_time = int(timestamp)
         if isinstance(sim, Simulation):
@@ -438,7 +441,9 @@ class ConservationVoltageReductionController(object):
                 continue
 
             meas_term = meas_obj.Terminal
-            if isinstance(meas_term, cim.Terminal):
+            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
+                meas_base = float(meas_obj.PowerSystemResource.ratedU)
+            elif isinstance(meas_term, cim.Terminal):
                 if meas_term.TransformerEnd:
                     if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
                         meas_base = float(meas_term.TransformerEnd[0].ratedU)
@@ -459,7 +464,7 @@ class ConservationVoltageReductionController(object):
                     logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
-                logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                logger.error('Voltage Measurement has no associated nominal Voltage.\nMeasurement: '
                              f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
                 continue
             pnv_meta_data = {'measured PNV': meas_value, 'measured LLV': meas_value * math.sqrt(3.0), 'rated V': meas_base}
@@ -845,6 +850,8 @@ class ConservationVoltageReductionController(object):
                 for j in range(len(element_tuple[1])):
                     rtp = element_tuple[1][j]
                     rtpPhases = getRatioTapChangerPhases(rtp)
+                    if phases is None:
+                        phases = cim.PhaseCode.ABC.value
                     if not (rtpPhases in phases or phases in rtpPhases):
                         continue
                     if success:

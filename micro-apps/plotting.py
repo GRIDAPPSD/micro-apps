@@ -345,8 +345,8 @@ def create_power_comparison_plot(base_path, peak_shaving_path, carbon_path):
     )
     fig.add_trace(
         go.Scatter(
-            x=load.loc[load.phase=="B", "time"],
-            y=load.loc[load.phase=="B", "peak"],
+            x=load.loc[load.phase=="C", "time"],
+            y=load.loc[load.phase=="C", "peak"],
             name="Peak Shaving",
             line=dict(color="blue", width=0.9),
             showlegend=False,
@@ -356,8 +356,8 @@ def create_power_comparison_plot(base_path, peak_shaving_path, carbon_path):
     )
     fig.add_trace(
         go.Scatter(
-            x=load.loc[load.phase=="B", "time"],
-            y=load.loc[load.phase=="B", "carbon"],
+            x=load.loc[load.phase=="C", "time"],
+            y=load.loc[load.phase=="C", "carbon"],
             name="Carbon Management",
             line=dict(color="green", width=0.9),
             showlegend=False,
@@ -402,6 +402,52 @@ def create_voltage_plot(path):
     v_summary["min"] = v_min
     v_summary["max"] = v_max
     fig = px.line(v_summary, y=["mean", "min", "max"])
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1].upper()))
+    fig.for_each_yaxis(lambda a: a.update(
+        # tickformat=".1f",
+        dtick=0.05
+    ))
+    # fig.for_each_xaxis(lambda a: a.update(
+    #     title_standoff=0.5,
+    # ))
+    fig.update_layout(
+        template="plotly_white",
+        margin={"l": 10, "r": 20, "t": 25, "b": 10},
+        # title_text='IEEE 123 Node Test Feeder',
+        # title_y=0.98,
+        title_x=0.5,
+        legend_title_text="",
+        font_family="Times New Roman",
+        font_color="black",
+        legend_orientation="h",
+        legend_xref="paper",
+        legend_xanchor="right",
+        legend_bgcolor="rgba(256,256,256,1)",
+        legend_borderwidth=1,
+        legend_bordercolor="rgba(0,0,0,1)",
+        legend_x=0.95,
+        legend_y=-0.2,
+        # legend_yref='container',
+        # legend_y=-0.25,
+        yaxis_title_standoff=0.0,
+        xaxis_title="Time",
+        yaxis_title="Voltage (p.u.)",
+    )
+    fig.add_hline(y=0.95, line_dash='dot')
+    fig.add_hline(y=1.05, line_dash='dot')
+    return fig
+
+def create_voltage_all_plot(path):
+    v = pd.read_csv(path)
+    v.time = pd.to_datetime(v['time'], origin="unix", unit='s')
+    # v_mean = v.groupby(by="time").voltage.aggregate("mean")
+    # v_min = v.groupby(by="time").voltage.aggregate("min")
+    # v_max = v.groupby(by="time").voltage.aggregate("max")
+    # v_summary = pd.DataFrame(index=v_mean.index)
+    # v_summary["mean"] = v_mean
+    # v_summary["min"] = v_min
+    # v_summary["max"] = v_max
+    fig = px.line(v, x="time", y="voltage", color="node", facet_col="phase")
     fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1].upper()))
     fig.for_each_yaxis(lambda a: a.update(
         # tickformat=".1f",
@@ -523,10 +569,14 @@ fig.write_image(cvr_path / "output/ieee123_apps/feeder_head.png")
 fig = create_var_plot(cvr_path / power_path, no_app_path / power_path)
 save_pdf(fig, cvr_path / "output/ieee123_apps/reactive_power.pdf")
 fig.write_image(cvr_path / "output/ieee123_apps/reactive_power.png")
-# CVR Voltage
+# CVR Voltage Summary
 fig = create_voltage_plot(cvr_path / "output/ieee123_apps/voltages.csv")
-fig.write_image(cvr_path / "output/ieee123_apps/voltages.png")
-save_pdf(fig, cvr_path / "output/ieee123_apps/voltages.pdf")
+fig.write_image(cvr_path / "output/ieee123_apps/voltage_summary.png")
+save_pdf(fig, cvr_path / "output/ieee123_apps/voltage_summary.pdf")
+# CVR Voltage
+# fig = create_voltage_all_plot(cvr_path / "output/ieee123_apps/voltages.csv")
+# fig.write_image(cvr_path / "output/ieee123_apps/voltages.png")
+# save_pdf(fig, cvr_path / "output/ieee123_apps/voltages.pdf")
 
 # Peak Shaving Batteries
 fig = create_batt_plot(peak_path / "output/ieee123_apps/battery_power.csv", units="W")

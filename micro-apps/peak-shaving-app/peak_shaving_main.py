@@ -1,7 +1,9 @@
 import importlib
+import logging
 import math
 import os
 import csv
+from cmath import exp
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -16,10 +18,13 @@ from gridappsd import DifferenceBuilder, GridAPPSD, topics
 from gridappsd.simulation import *
 from gridappsd.utils import ProcessStatusEnum
 
-import cimgraph.data_profile.rc4_2021 as cim
-from cmath import exp
-
-# cim = None
+logging.basicConfig(format='%(asctime)s::%(levelname)s::%(name)s::%(filename)s::%(lineno)d::%(message)s',
+                    filename='peak_shaving.log',
+                    filemode='w',
+                    level=logging.INFO,
+                    encoding='utf-8')
+logger = logging.getLogger(__name__)
+cim = None
 DB_CONNECTION = None
 CIM_GRAPH_MODELS = {}
 
@@ -103,8 +108,8 @@ def findPrimaryPhase(cimObj):
             break
         for tankEnd in tank.TransformerTankEnds:
             if tankEnd.phases not in [
-                    cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
-                    cim.PhaseCode.s2, cim.PhaseCode.s2N
+                cim.PhaseCode.none, cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s12N, cim.PhaseCode.s1N,
+                cim.PhaseCode.s2, cim.PhaseCode.s2N
             ]:
                 phaseCode = tankEnd.phases
                 break
@@ -149,7 +154,7 @@ def findFeederPowerRating(cimObj):
         feederPowerRating = float(powerTransformerEnds[0].ratedS)
     else:
         raise RuntimeError('findFeederPowerRating(): The found at the feeder head is not a three phase transformer!')
-    print(f'Feeder Power Rating: {feederPowerRating} W')
+    logger.info(f'Feeder Power Rating: {feederPowerRating} W')
     return feederPowerRating
 
 
@@ -230,7 +235,7 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
                               duration=f'{duration}',
                               simulation_name=sim_name,
                               run_realtime=False,
-                              pause_after_measurements=True)
+                              pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
     return sim_obj
@@ -245,7 +250,7 @@ def createGadObject() -> GridAPPSD:
         os.environ['GRIDAPPSD_PASSWORD'] = 'manager'
     gad_app_id = os.environ.get('GRIDAPPSD_APPLICATION_ID')
     if gad_app_id is None:
-        os.environ['GRIDAPPSD_APPLICATION_ID'] = 'ConservationVoltageReductionApplication'
+        os.environ['GRIDAPPSD_APPLICATION_ID'] = 'PeakShavingApplication'
     return GridAPPSD()
 
 
@@ -258,6 +263,14 @@ def removeDirectory(directory: Path | str):
         else:
             item.unlink()
     directory.rmdir()
+
+
+def pol2cart(mag, angle_deg):
+    # Convert degrees to radians. GridAPPS-D spits angle in degrees
+    angle_rad = math.radians(angle_deg)
+    p = mag * math.cos(angle_rad)
+    q = mag * math.sin(angle_rad)
+    return p, q
 
 
 class PeakShavingController(object):
@@ -306,9 +319,16 @@ class PeakShavingController(object):
             raise TypeError(f'sim_id must be a string type or {None}!')
         if not isinstance(simulation, Simulation) and simulation is not None:
             raise TypeError(f'The simulation arg must be a Simulation type or {None}!')
+        self.model_results_path = None
         self.timestamp = 0
+        self.model_id = model_id
         self.id = uuid4()
         self.desired_setpoints = {}
+        self.pnv_measurements = {}
+        self.pnv_measurements_pu = {}
+        self.va_measurements = {}
+        self.pos_measurements = {}
+        self.link_measurements = {}
         self.controllable_batteries_ABC = {}
         self.controllable_batteries_A = {}
         self.controllable_batteries_B = {}
@@ -325,7 +345,7 @@ class PeakShavingController(object):
         self.measurements_topic = None
         self.setpoints_topic = None
         self.simulation = None
-        self.simulation_id = None    #TODO: figure out what simulation_id should be when deployed in the field.
+        self.simulation_id = None  # TODO: figure out what simulation_id should be when deployed in the field.
         if simulation is not None:
             self.simulation = simulation
             self.simulation_id = simulation.simulation_id
@@ -335,7 +355,7 @@ class PeakShavingController(object):
         else:
             self.simulation_id = sim_id
             self.measurements_topic = topics.simulation_output_topic(sim_id)
-        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
+
         self.gad_obj = gad_obj
         self.log = self.gad_obj.get_logger()
         if self.measurements_topic:
@@ -362,7 +382,6 @@ class PeakShavingController(object):
             self.peak_setpoint_C = peak_setpoint / 3.0
         else:
             self.configurePeakShavingSetpoint()
-        print(f"Peak setpoints: a:{self.peak_setpoint_A}, b:{self.peak_setpoint_B}, c:{self.peak_setpoint_C}")
         if base_setpoint is not None:
             self.base_setpoint_A = base_setpoint / 3.0
             self.base_setpoint_B = base_setpoint / 3.0
@@ -371,21 +390,52 @@ class PeakShavingController(object):
             self.base_setpoint_A = 0.8 * self.peak_setpoint_A
             self.base_setpoint_B = 0.8 * self.peak_setpoint_B
             self.base_setpoint_C = 0.8 * self.peak_setpoint_C
-        print(f"Base setpoints: a:{self.base_setpoint_A}, b:{self.base_setpoint_B}, c:{self.base_setpoint_C}")
         self.findFeederHeadLoadMeasurements()
-        if self.simulation is not None:
-            self.simulation.start_simulation()
 
-        self.isValid = True
-        self.first_message = True
+
+        measurements = {}
+        measurements.update(self.graph_model.graph.get(cim.Analog, {}))
+        measurements.update(self.graph_model.graph.get(cim.Discrete, {}))
+
+        # print(measurements.keys())
+        for meas in measurements.values():
+            if meas.measurementType == 'PNV':    # it's a voltage measurement. store it.
+                mrid = meas.mRID
+                self.pnv_measurements[mrid] = {'measurement_object': meas, 'measurement_value': None}
+            elif meas.measurementType == 'VA':    # it's a power measurement.
+                if isinstance(meas.PowerSystemResource, (cim.EnergyConsumer, cim.PowerElectronicsConnection)):
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.va_measurements.keys():
+                        self.va_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.va_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.va_measurements[mrid]['measurement_values'][meas.mRID] = None
+                if isinstance(meas.PowerSystemResource, (cim.ACLineSegment, cim.PowerTransformer)):
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.va_measurements.keys():
+                        self.link_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.link_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.link_measurements[mrid]['measurement_values'][meas.mRID] = None
+            elif meas.measurementType == 'Pos':    # it's a positional measurement.
+                if isinstance(meas.PowerSystemResource, (cim.Switch, cim.PowerTransformer, cim.LinearShuntCompensator)):
+                    mrid = meas.PowerSystemResource.mRID
+                    if mrid not in self.pos_measurements.keys():
+                        self.pos_measurements[mrid] = {'measurement_objects': {}, 'measurement_values': {}}
+                    self.pos_measurements[mrid]['measurement_objects'][meas.mRID] = meas
+                    self.pos_measurements[mrid]['measurement_values'][meas.mRID] = None
 
         # data output
         out_dir = Path(__file__).parent/"output"
-        feeder = self.graph_model.graph.get(cim.Feeder, {}).get(model_id)
+        feeder = self.graph_model.graph.get(cim.Feeder, {}).get(self.model_id)
         self.model_results_path = out_dir/feeder.name
         self.model_results_path.mkdir(parents=True, exist_ok=True)
         # self.findFeederHeadLoadMeasurements()
         self.init_output_file()
+        if self.simulation is not None:
+            self.simulation.start_simulation()
+            self.simulation_id = self.simulation.simulation_id
+        self.differenceBuilder = DifferenceBuilder(self.simulation_id)
+        self.isValid = True
+        self.first_message = True
 
     def init_output_file(self):
         for child in self.model_results_path.iterdir():
@@ -425,6 +475,188 @@ class PeakShavingController(object):
                 s_angle_rad = measurements.get(mrid).get("angle")
                 total_loads[phase] = s_magnitude*exp(1j*math.radians(s_angle_rad))
         return total_loads
+
+    def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
+        self.timestamp = timestamp
+        self.desired_setpoints.clear()
+        if isinstance(sim, Simulation):
+            self.setpoints_topic = topics.simulation_input_topic(sim.simulation_id)
+            sim.pause()
+        total_loads = self.get_feeder_head_measurements(measurements)
+        self.save_total_load_data(timestamp, total_loads)
+        for mrid in self.peak_va_measurements_A.keys():
+            measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_A[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "A", load.real, load.imag])
+        for mrid in self.peak_va_measurements_B.keys():
+            measurement = measurements.get(self.peak_va_measurements_B[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_B[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "B", load.real, load.imag])
+        for mrid in self.peak_va_measurements_C.keys():
+            measurement = measurements.get(self.peak_va_measurements_C[mrid]['object'].mRID)
+            if measurement is not None:
+                self.peak_va_measurements_C[mrid]['value'] = measurement
+                mag = measurement.get('magnitude')
+                ang_in_deg = measurement.get('angle')
+                if ((mag is not None) and (ang_in_deg is not None)):
+                    load = mag * exp(1j*math.radians(ang_in_deg))
+                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "C", load.real, load.imag])
+        for mrid in self.controllable_batteries_ABC.keys():
+            power_data_to_save = [0, 0, 0]
+            for measDict in self.controllable_batteries_ABC[mrid]['power_measurements']:
+                measurement = measurements.get(measDict['object'].mRID)
+                if measurement is not None:
+                    measDict['value'] = measurement
+                    phase = measDict["object"].phases.value
+                    p, q = pol2cart(measurement.get("magnitude"), measurement.get("angle"))
+                    power_data_to_save[("ABC").index(phase)] = p
+            measurement = measurements.get(self.controllable_batteries_ABC[mrid]['soc_measurement']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_ABC[mrid]['soc_measurement']['value'] = measurement
+            header = ["time", "mrid", "battery", "p_a", "p_b", "p_c", "soc"]
+            data = [self.timestamp, mrid, measDict['object'].name]
+            data.extend(power_data_to_save)
+            data.append(self.controllable_batteries_ABC[mrid]['soc_measurement']['value'].get("value"))
+            add_data_to_csv(self.model_results_path/"battery_power.csv", data)
+        for mrid in self.controllable_batteries_A.keys():
+            for measDict in self.controllable_batteries_A[mrid]['power_measurements']:
+                measurement = measurements.get(measDict['object'].mRID)
+                if measurement is not None:
+                    measDict['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_A[mrid]['soc_measurement']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_A[mrid]['soc_measurement']['value'] = measurement
+        for mrid in self.controllable_batteries_B.keys():
+            for measDict in self.controllable_batteries_B[mrid]['power_measurements']:
+                measurement = measurements.get(measDict['object'].mRID)
+                if measurement is not None:
+                    measDict['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_B[mrid]['soc_measurement']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_B[mrid]['soc_measurement']['value'] = measurement
+        for mrid in self.controllable_batteries_C.keys():
+            for measDict in self.controllable_batteries_C[mrid]['power_measurements']:
+                measurement = measurements.get(measDict['object'].mRID)
+                if measurement is not None:
+                    measDict['value'] = measurement
+            measurement = measurements.get(self.controllable_batteries_C[mrid]['soc_measurement']['object'].mRID)
+            if measurement is not None:
+                self.controllable_batteries_C[mrid]['soc_measurement']['value'] = measurement
+
+        for mrid in self.pnv_measurements.keys():
+            meas = measurements.get(mrid)
+            if meas is not None:
+                self.pnv_measurements[mrid]['measurement_value'] = meas
+        for psr_mrid in self.va_measurements.keys():
+            for mrid in self.va_measurements[psr_mrid]['measurement_values'].keys():
+                meas = measurements.get(mrid)
+                if meas is not None:
+                    self.va_measurements[psr_mrid]['measurement_values'][mrid] = meas
+        for psr_mrid in self.pos_measurements.keys():
+            for mrid in self.pos_measurements[psr_mrid]['measurement_values'].keys():
+                meas = measurements.get(mrid)
+                if meas is not None:
+                    self.pos_measurements[psr_mrid]['measurement_values'][mrid] = meas
+                    if isinstance(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource, (cim.LinearShuntCompensator, cim.PowerTransformer)):
+                        pos_measurement_debug_data = {
+                            "object_type": f"{type(self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource).__name__}",
+                            "name": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].PowerSystemResource.name,
+                            "phase": self.pos_measurements[psr_mrid]['measurement_objects'][mrid].phases.value,
+                            "value": int(meas.get("value")),
+                            "timestamp": timestamp
+                        }
+                        logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
+
+        self.calculate_per_unit_voltage()
+        self.save_voltage_data(timestamp)
+        self.peak_shaving_control()
+        if isinstance(sim, Simulation):
+            sim.resume()
+
+    def findFeederHeadLoadMeasurements(self):
+        energySources = self.graph_model.graph.get(cim.EnergySource, {})
+        feederLoadObject = None
+        for eSource in energySources.values():
+            feederLoadObject = findFeederHeadPowerMeasurmentsObject(eSource)
+            feederLoadMeasurements = feederLoadObject.Measurements
+            for measurement in feederLoadMeasurements:
+                if measurement.measurementType == 'VA':
+                    if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
+                        self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
+                        self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
+                    elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
+                        self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
+        if not self.peak_va_measurements_A or not self.peak_va_measurements_B or not self.peak_va_measurements_C:
+            raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
+                               'feeder head transformer!')
+
+    def calculate_per_unit_voltage(self):
+        for mrid in self.pnv_measurements.keys():
+            self.pnv_measurements_pu[mrid] = None
+            meas_base = None
+            meas = self.pnv_measurements.get(mrid)
+            if (meas is None) or (meas.get('measurement_value') is None):
+                self.log.warning(f'Measurement {mrid} is missing. It will be ignored in control.')
+                continue
+            meas_value = meas.get('measurement_value').get('magnitude')
+            if meas_value is None:
+                self.log.error(f'An unexpected value of None was recieved for PNV measurement {mrid}. It will be '
+                               'ignored in control.')
+                continue
+            meas_obj = meas.get('measurement_object')
+            if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
+                self.log.error(f'The cim.Measurement object {mrid} associated with this measurement value is missing! '
+                               'It will be ignored in control.')
+                logger.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
+                continue
+            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
+                meas_base = float(meas_obj.PowerSystemResource.ratedU)
+            else:
+                meas_term = meas_obj.Terminal
+                if isinstance(meas_term, cim.Terminal):
+                    if meas_term.TransformerEnd:
+                        if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
+                            meas_base = float(meas_term.TransformerEnd[0].ratedU)
+                        elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
+                            if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
+                                meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
+                            else:
+                                self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                                raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
+                                                f'{meas_term.ConnectivityNode.name} is None')
+                    elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
+                        if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
+                            meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
+                        else:
+                            logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                    else:
+                        logger.error(f'meas_term.ConductingEquipment is None')
+            if (meas_base is None) or (meas_base < 1e-10):
+                self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
+                logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
+                             f'{meas_obj.name}\nTerminal: {meas_obj.Terminal.name}\n')
+                continue
+            pnv_meta_data = {'measured PNV': meas_value, 'measured LLV': meas_value * math.sqrt(3.0), 'rated V': meas_base}
+            pu_vals = [meas_value / meas_base, meas_value * math.sqrt(3.0) / meas_base]
+            diff = max(pu_vals)
+            for i in range(len(pu_vals)):
+                if abs(1.0-pu_vals[i]) < diff:
+                    diff = abs(1.0-pu_vals[i])
+                    self.pnv_measurements_pu[mrid] = pu_vals[1]
+            pnv_meta_data['pu V'] = self.pnv_measurements_pu[mrid]
+            logger.info(f'Voltage meta data for {meas_obj.Terminal.ConnectivityNode.name}:{json.dumps(pnv_meta_data,indent=4)}')
 
     def save_total_load_data(self, time, total_loads):
         file_path = self.model_results_path/"total_load.csv"
@@ -534,7 +766,7 @@ class PeakShavingController(object):
             if 'C' in strPhases:
                 phaseCodeStr += 'C'
             phaseCode = cim.PhaseCode(phaseCodeStr)
-        else:    # inverter is on the secondary system need to trace up to the centertapped tansformer.
+        else:  # inverter is on the secondary system need to trace up to the centertapped tansformer.
             phaseCode = self.findPrimaryPhase(cimObj)
         return phaseCode
 
@@ -544,109 +776,11 @@ class PeakShavingController(object):
         for source in energySources.values():
             feederPowerRating = findFeederPowerRating(source)
         self.peak_setpoint_A = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A + self.installed_battery_capacity_ABC/3)*0.95)
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_A * 0.95))
         self.peak_setpoint_B = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B + self.installed_battery_capacity_ABC/3)*0.95)
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_B * 0.95))
         self.peak_setpoint_C = max(0.5 * (feederPowerRating / 3.0),
-                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C + self.installed_battery_capacity_ABC/3)*0.95)
-
-    def findFeederHeadLoadMeasurements(self):
-        energySources = self.graph_model.graph.get(cim.EnergySource, {})
-        feederLoadObject = None
-        for eSource in energySources.values():
-            feederLoadObject = findFeederHeadPowerMeasurmentsObject(eSource)
-            feederLoadMeasurements = feederLoadObject.Measurements
-            for measurement in feederLoadMeasurements:
-                if measurement.measurementType == 'VA':
-                    if measurement.phases in [cim.PhaseCode.A, cim.PhaseCode.AN]:
-                        self.peak_va_measurements_A[measurement.mRID] = {'object': measurement, 'value': None}
-                    elif measurement.phases in [cim.PhaseCode.B, cim.PhaseCode.BN]:
-                        self.peak_va_measurements_B[measurement.mRID] = {'object': measurement, 'value': None}
-                    elif measurement.phases in [cim.PhaseCode.C, cim.PhaseCode.CN]:
-                        self.peak_va_measurements_C[measurement.mRID] = {'object': measurement, 'value': None}
-        if not self.peak_va_measurements_A or not self.peak_va_measurements_B or not self.peak_va_measurements_C:
-            raise RuntimeError(f'feeder {self.graph_model.container.mRID}, has no measurements associated with the '
-                               'feeder head transformer!')
-
-    def on_measurement(self, sim: Simulation, timestamp: str, measurements: Dict[str, Dict]):
-        if self.simulation is not None:
-            self.simulation.pause()
-        print(datetime.fromtimestamp(timestamp, tz=timezone.utc))
-        self.timestamp = timestamp
-        self.desired_setpoints.clear()
-        total_loads = self.get_feeder_head_measurements(measurements)
-        self.save_total_load_data(timestamp, total_loads)
-        #TODO: update measurements
-        for mrid in self.peak_va_measurements_A.keys():
-            measurement = measurements.get(self.peak_va_measurements_A[mrid]['object'].mRID)
-            if measurement is not None:
-                self.peak_va_measurements_A[mrid]['value'] = measurement
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load = mag * exp(1j*math.radians(ang_in_deg))
-                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "A", load.real, load.imag])
-        for mrid in self.peak_va_measurements_B.keys():
-            measurement = measurements.get(self.peak_va_measurements_B[mrid]['object'].mRID)
-            if measurement is not None:
-                self.peak_va_measurements_B[mrid]['value'] = measurement
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load = mag * exp(1j*math.radians(ang_in_deg))
-                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "B", load.real, load.imag])
-        for mrid in self.peak_va_measurements_C.keys():
-            measurement = measurements.get(self.peak_va_measurements_C[mrid]['object'].mRID)
-            if measurement is not None:
-                self.peak_va_measurements_C[mrid]['value'] = measurement
-                mag = measurement.get('magnitude')
-                ang_in_deg = measurement.get('angle')
-                if ((mag is not None) and (ang_in_deg is not None)):
-                    load = mag * exp(1j*math.radians(ang_in_deg))
-                    add_data_to_csv(self.model_results_path/"feeder_head.csv", [self.timestamp, mrid, "C", load.real, load.imag])
-        for mrid in self.controllable_batteries_ABC.keys():
-            power_data_to_save = [0, 0, 0]
-            for measDict in self.controllable_batteries_ABC[mrid]['power_measurements']:
-                measurement = measurements.get(measDict['object'].mRID)
-                if measurement is not None:
-                    measDict['value'] = measurement
-                    phase = measDict["object"].phases.value
-                    power_data_to_save[("ABC").index(phase)] = measurement.get("magnitude")
-            measurement = measurements.get(self.controllable_batteries_ABC[mrid]['soc_measurement']['object'].mRID)
-            if measurement is not None:
-                self.controllable_batteries_ABC[mrid]['soc_measurement']['value'] = measurement
-            header = ["time", "mrid", "battery", "p_a", "p_b", "p_c", "soc"]
-            data = [self.timestamp, mrid, measDict['object'].name]
-            data.extend(power_data_to_save)
-            data.append(self.controllable_batteries_ABC[mrid]['soc_measurement']['value'].get("value"))
-            add_data_to_csv(self.model_results_path/"battery_power.csv", data)
-        for mrid in self.controllable_batteries_A.keys():
-            for measDict in self.controllable_batteries_A[mrid]['power_measurements']:
-                measurement = measurements.get(measDict['object'].mRID)
-                if measurement is not None:
-                    measDict['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_A[mrid]['soc_measurement']['object'].mRID)
-            if measurement is not None:
-                self.controllable_batteries_A[mrid]['soc_measurement']['value'] = measurement
-        for mrid in self.controllable_batteries_B.keys():
-            for measDict in self.controllable_batteries_B[mrid]['power_measurements']:
-                measurement = measurements.get(measDict['object'].mRID)
-                if measurement is not None:
-                    measDict['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_B[mrid]['soc_measurement']['object'].mRID)
-            if measurement is not None:
-                self.controllable_batteries_B[mrid]['soc_measurement']['value'] = measurement
-        for mrid in self.controllable_batteries_C.keys():
-            for measDict in self.controllable_batteries_C[mrid]['power_measurements']:
-                measurement = measurements.get(measDict['object'].mRID)
-                if measurement is not None:
-                    measDict['value'] = measurement
-            measurement = measurements.get(self.controllable_batteries_C[mrid]['soc_measurement']['object'].mRID)
-            if measurement is not None:
-                self.controllable_batteries_C[mrid]['soc_measurement']['value'] = measurement
-        self.peak_shaving_control()
-        if self.simulation is not None:
-            self.simulation.resume()
+                                   (feederPowerRating / 3.0) - (self.installed_battery_capacity_C * 0.95))
 
     def on_measurement_callback(self, header: Dict[str, Any], message: Dict[str, Any]):
         timestamp = message.get('message', {}).get('timestamp', '')
@@ -679,7 +813,6 @@ class PeakShavingController(object):
         if min_power_diff > 1e-6:
             deadband_ABC = False
             control_dict, actual_power = self.calc_batt_discharge_ABC(3.0 * min_power_diff, lower_limit)
-            print(f"discharging control dict: {control_dict.keys()}")
             self.desired_setpoints.update(control_dict)
             power_diff_A -= actual_power / 3.0
             power_diff_B -= actual_power / 3.0
@@ -687,7 +820,6 @@ class PeakShavingController(object):
         elif max_power_diff < -1e-6:
             deadband_ABC = False
             control_dict, actual_power = self.calc_batt_charge_ABC(3.0 * abs(max_power_diff), upper_limit)
-            print(f"charging control dict: {control_dict.keys()}")
             self.desired_setpoints.update(control_dict)
             power_diff_A += abs(actual_power) / 3.0
             power_diff_B += abs(actual_power) / 3.0
@@ -1392,8 +1524,8 @@ class PeakShavingController(object):
                     f'The CIM object with mRID, {cimObj.mRID}, is not a cim.PowerElectronicsConnection. The '
                     f'object is a {type(cimObj)}. This application will ignore sending a setpoint to this '
                     'object.')
-        setpointMessage = self.differenceBuilder.get_message()
-        self.gad_obj.send(self.setpoints_topic, json.dumps(setpointMessage))
+        setpointMessage = json.dumps(self.differenceBuilder.get_message(), indent=4, sort_keys=True)
+        self.gad_obj.send(self.setpoints_topic, setpointMessage)
 
     def simulation_completed(self, sim: Simulation):
         self.log.info(f'Simulation for PeakShavingController:{self.id} has finished. This application '
@@ -1441,7 +1573,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         for m in models:
             local_simulations[m.get('modelId', '')] = createSimulation(gad_object, m)
     else:
-        #TODO: query platform for running simulations which is currently not implemented in the GridAPPS-D Api
+        # TODO: query platform for running simulations which is currently not implemented in the GridAPPS-D Api
         pass
     # Create an peak shaving controller instance for all the real systems in the database
     # for m in models:
@@ -1472,13 +1604,13 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
         app_instances_exist = True
     application_uptime = int(time.time())
     if app_instances_exist:
-        gad_log.info('ConservationVoltageReductionApplication successfully started.')
+        gad_log.info('PeakShavingApplication successfully started.')
         gad_object.set_application_status(ProcessStatusEnum.RUNNING)
 
     while gad_object.connected:
         try:
             app_instances_exist = False
-            #TODO: check platform for any running external simulations to control.
+            # TODO: check platform for any running external simulations to control.
             invalidInstances = []
             for m_id, app in app_instances.get('field_instances', {}).items():
                 if not app.isValid:
@@ -1487,7 +1619,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
                 del app_instances['field_instances'][m_id]
             invalidInstances = []
             for sim_id, app in app_instances.get('external_simulation_instances', {}).items():
-                #TODO: check if external simulation has finished and shutdown the corresponding app instance.
+                # TODO: check if external simulation has finished and shutdown the corresponding app instance.
                 if not app.isValid:
                     invalidInstances.append(sim_id)
             for sim_id in invalidInstances:
@@ -1515,7 +1647,7 @@ def main(control_enabled: bool, start_simulations: bool, model_id: str = None):
                     gad_object.set_application_status(ProcessStatusEnum.STOPPING)
                     gad_object.disconnect()
         except KeyboardInterrupt:
-            gad_log.info('Manually exiting ConservationVoltageReductionApplication')
+            gad_log.info('Manually exiting PeakShavingApplication')
             gad_object.set_application_status(ProcessStatusEnum.STOPPING)
             appList = list(app_instances.get('field_instances', {}))
             for app_mrid in appList:

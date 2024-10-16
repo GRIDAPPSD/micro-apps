@@ -366,10 +366,10 @@ class ConservationVoltageReductionController(object):
                             "timestamp": timestamp
                         }
                         logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
+        self.calculate_per_unit_voltage()
+        self.save_voltage_data(timestamp)
         if (self.measurementTime < 0):
             self.measurementTime = int(timestamp)
-            self.calculate_per_unit_voltage()
-            self.save_voltage_data(timestamp)
             self.update_opendss_with_measurements()
             if int(timestamp) > self.next_control_time:
                 self.cvr_control()

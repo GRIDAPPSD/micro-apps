@@ -239,6 +239,158 @@ def create_power_plot(primary_path, base_path):
     return fig
 
 
+def create_power_comparison_plot(base_path, peak_shaving_path, carbon_path):
+    load = pd.read_csv(base_path)
+    load.p = load.p/1e6
+    load.time = pd.to_datetime(load['time'],origin="unix", unit='s')
+    if isinstance(peak_shaving_path, pd.DataFrame):
+        peak_shaving_load = pd.DataFrame(peak_shaving_path)
+    else:
+        peak_shaving_load = pd.read_csv(peak_shaving_path)
+    if isinstance(carbon_path, pd.DataFrame):
+        carbon_load = pd.DataFrame(carbon_path)
+    else:
+        carbon_load = pd.read_csv(carbon_path)
+    carbon_load.time = pd.to_datetime(carbon_load['time'],origin="unix", unit='s')
+    peak_shaving_load.time = pd.to_datetime(peak_shaving_load['time'],origin="unix", unit='s')
+    load["peak"] = peak_shaving_load.p/1e6
+    load["carbon"] = carbon_load.p/1e6
+    load.time = pd.to_datetime(load['time'],origin="unix", unit='s')
+    load["base"] = load.p
+    # fig = px.line(load, x="time", y=["control"], facet_row="phase", labels={"p": "Active Power", "q": "Reactive Power"} )
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        shared_yaxes=True,
+        horizontal_spacing=0.01,
+        vertical_spacing=0.01,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="A", "time"],
+            y=load.loc[load.phase=="A", "base"],
+            name="no control",
+            line=dict(color="black", dash="dash"),
+            showlegend=True,
+            legendgroup="no control",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="A", "time"],
+            y=load.loc[load.phase=="A", "peak"],
+            name="Peak Shaving",
+            line=dict(color="blue", width=0.9),
+            showlegend=True,
+            legendgroup="peak",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="A", "time"],
+            y=load.loc[load.phase=="A", "carbon"],
+            name="Carbon Management",
+            line=dict(color="green", width=0.9),
+            showlegend=True,
+            legendgroup="carbon",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="B", "time"],
+            y=load.loc[load.phase=="B", "base"],
+            name="no control",
+            line=dict(color="black", dash="dash"),
+            showlegend=False,
+            legendgroup="no control",
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="B", "time"],
+            y=load.loc[load.phase=="B", "peak"],
+            name="Peak Shaving",
+            line=dict(color="blue", width=0.9),
+            showlegend=False,
+            legendgroup="peak",
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="B", "time"],
+            y=load.loc[load.phase=="B", "carbon"],
+            name="Carbon Management",
+            line=dict(color="green", width=0.9),
+            showlegend=False,
+            legendgroup="carbon",
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="C", "time"],
+            y=load.loc[load.phase=="C", "base"],
+            name="no control",
+            line=dict(color="black", dash="dash"),
+            showlegend=False,
+            legendgroup="no control",
+        ),
+        row=3, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="B", "time"],
+            y=load.loc[load.phase=="B", "peak"],
+            name="Peak Shaving",
+            line=dict(color="blue", width=0.9),
+            showlegend=False,
+            legendgroup="peak",
+        ),
+        row=3, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=load.loc[load.phase=="B", "time"],
+            y=load.loc[load.phase=="B", "carbon"],
+            name="Carbon Management",
+            line=dict(color="green", width=0.9),
+            showlegend=False,
+            legendgroup="carbon",
+        ),
+        row=3, col=1,
+    )
+    # fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1].upper()))
+    fig.update_layout(
+        template="plotly_white",
+        margin={"l": 10, "r": 20, "t": 25, "b": 10},
+        # title_text='IEEE 123 Node Test Feeder',
+        # title_y=0.98,
+        # title_x=0.5,
+        legend_title_text="",
+        font_family="Times New Roman",
+        font_size=10,
+        font_color="black",
+        legend_orientation="h",
+        legend_xref="paper",
+        legend_xanchor="center",
+        legend_bgcolor="rgba(256,256,256,1)",
+        legend_borderwidth=1,
+        legend_bordercolor="rgba(0,0,0,1)",
+        legend_x=0.5,
+        legend_y=1.1,
+        # legend_yref='container',
+        # legend_y=-0.25
+        xaxis3_title="Time",
+        yaxis2_title="Feeder Load (MW)",
+    )
+    return fig
+
 def create_voltage_plot(path):
     v = pd.read_csv(path)
     v.time = pd.to_datetime(v['time'], origin="unix", unit='s')
@@ -343,6 +495,7 @@ def create_batt_plot(path, units="kW"):
     return fig
 
 #%%
+plots_path = Path("~/git/micro-apps/micro-apps/plots").expanduser()
 no_app_path = Path("~/git/micro-apps/micro-apps/no-app").expanduser()
 cvr_path = Path("~/git/micro-apps/micro-apps/conservation-voltage-reduction-app").expanduser()
 carbon_path = Path("~/git/micro-apps/micro-apps/carbon-management-app").expanduser()
@@ -352,7 +505,7 @@ power_path = Path("output/ieee123_apps/feeder_head.csv")
 
 no_app_power_path = no_app_path / power_path
 
-# # Carbon Power
+# Carbon Power
 # fig = create_power_plot(carbon_path / power_path, no_app_path / power_path)
 # save_pdf(fig, carbon_path / "output/ieee123_apps/feeder_head.pdf")
 # fig.write_image(carbon_path / "output/ieee123_apps/feeder_head.png")
@@ -361,6 +514,7 @@ no_app_power_path = no_app_path / power_path
 # fig = create_batt_plot(carbon_path / "output/ieee123_apps/simulation_table.csv")
 # fig.write_image(carbon_path / "output/ieee123_apps/batt.png")
 # save_pdf(fig, carbon_path / "output/ieee123_apps/batt.pdf")
+#
 # # CVR Power
 # fig = create_power_plot(cvr_path / power_path, no_app_path / power_path)
 # save_pdf(fig, cvr_path / "output/ieee123_apps/feeder_head.pdf")
@@ -370,22 +524,34 @@ no_app_power_path = no_app_path / power_path
 # save_pdf(fig, cvr_path / "output/ieee123_apps/reactive_power.pdf")
 # fig.write_image(cvr_path / "output/ieee123_apps/reactive_power.png")
 # # CVR Voltage
-# fig = create_voltage_plot(no_app_path / "output/ieee123_apps/voltages.csv")
-# fig.write_image(no_app_path / "output/ieee123_apps/voltages.png")
-# save_pdf(fig, no_app_path / "output/ieee123_apps/voltages.pdf")
-# Peak Shaving Batteries
-fig = create_batt_plot(peak_path / "output/ieee123_apps/battery_power.csv", units="W")
-fig.write_image(peak_path / "output/ieee123_apps/batt.png")
-save_pdf(fig, peak_path / "output/ieee123_apps/batt.pdf")
-# Peak Shaving Power
-fig = create_power_plot(peak_path / power_path, no_app_path / power_path)
-save_pdf(fig, peak_path / "output/ieee123_apps/feeder_head.pdf")
-fig.write_image(peak_path / "output/ieee123_apps/feeder_head.png")
-# Peak Shaving loads - battieries
-loads = pd.read_csv(peak_path / "output/ieee123_apps/loads_no_batt.csv")
-loads = loads.melt(id_vars=["time"], value_vars=["a", "b", "c"], var_name="phase", value_name="p")
-loads.phase = loads.phase.str.upper()
-loads = loads.sort_values(by=["time", "phase"], ignore_index=True)
-fig = create_power_plot(loads, no_app_path / power_path)
-# save_pdf(fig, peak_path / "output/ieee123_apps/loads_no_batt.pdf")
-fig.write_image(peak_path / "output/ieee123_apps/loads_no_batt.png")
+# fig = create_voltage_plot(cvr_path / "output/ieee123_apps/voltages.csv")
+# fig.write_image(cvr_path / "output/ieee123_apps/voltages.png")
+# save_pdf(fig, cvr_path / "output/ieee123_apps/voltages.pdf")
+#
+# # Peak Shaving Batteries
+# fig = create_batt_plot(peak_path / "output/ieee123_apps/battery_power.csv", units="W")
+# fig.write_image(peak_path / "output/ieee123_apps/batt.png")
+# save_pdf(fig, peak_path / "output/ieee123_apps/batt.pdf")
+# # Peak Shaving Voltage
+# fig = create_voltage_plot(peak_path / "output/ieee123_apps/voltages.csv")
+# fig.write_image(peak_path / "output/ieee123_apps/voltages.png")
+# save_pdf(fig, peak_path / "output/ieee123_apps/voltages.pdf")
+# # Peak Shaving Power
+# fig = create_power_plot(peak_path / power_path, no_app_path / power_path)
+# save_pdf(fig, peak_path / "output/ieee123_apps/feeder_head.pdf")
+# fig.write_image(peak_path / "output/ieee123_apps/feeder_head.png")
+# # Peak Shaving loads - batteries
+# loads = pd.read_csv(peak_path / "output/ieee123_apps/loads_no_batt.csv")
+# loads = loads.melt(id_vars=["time"], value_vars=["a", "b", "c"], var_name="phase", value_name="p")
+# loads.phase = loads.phase.str.upper()
+# loads = loads.sort_values(by=["time", "phase"], ignore_index=True)
+# fig = create_power_plot(loads, no_app_path / power_path)
+# # save_pdf(fig, peak_path / "output/ieee123_apps/loads_no_batt.pdf")
+# fig.write_image(peak_path / "output/ieee123_apps/loads_no_batt.png")
+
+fig = create_power_comparison_plot(
+    base_path=no_app_path / power_path,
+    peak_shaving_path=peak_path / power_path,
+    carbon_path=carbon_path / power_path,
+)
+fig.write_image(plots_path / "carbon_peak_comparison.png")

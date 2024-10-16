@@ -607,42 +607,40 @@ class PeakShavingController(object):
             meas_base = None
             meas = self.pnv_measurements.get(mrid)
             if (meas is None) or (meas.get('measurement_value') is None):
-                self.log.warning(f'Measurement {mrid} is missing. It will be ignored in control.')
+                self.log.warning(f'Measurement {mrid} is missing. It will be ignored in cvr control.')
                 continue
             meas_value = meas.get('measurement_value').get('magnitude')
             if meas_value is None:
                 self.log.error(f'An unexpected value of None was recieved for PNV measurement {mrid}. It will be '
-                               'ignored in control.')
+                               'ignored in cvr control.')
                 continue
             meas_obj = meas.get('measurement_object')
             if (meas_obj is None) or (not isinstance(meas_obj, cim.Measurement)):
                 self.log.error(f'The cim.Measurement object {mrid} associated with this measurement value is missing! '
-                               'It will be ignored in control.')
+                               'It will be ignored in cvr control.')
                 logger.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
                 continue
-            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
-                meas_base = float(meas_obj.PowerSystemResource.ratedU)
-            else:
-                meas_term = meas_obj.Terminal
-                if isinstance(meas_term, cim.Terminal):
-                    if meas_term.TransformerEnd:
-                        if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
-                            meas_base = float(meas_term.TransformerEnd[0].ratedU)
-                        elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
-                            if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
-                                meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
-                            else:
-                                self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
-                                logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
-                                raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
-                                                f'{meas_term.ConnectivityNode.name} is None')
-                    elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
-                        if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
-                            meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
+
+            meas_term = meas_obj.Terminal
+            if isinstance(meas_term, cim.Terminal):
+                if meas_term.TransformerEnd:
+                    if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
+                        meas_base = float(meas_term.TransformerEnd[0].ratedU)
+                    elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
+                        if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
+                            meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
                         else:
-                            logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                            self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                            logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                            raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
+                                            f'{meas_term.ConnectivityNode.name} is None')
+                elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
+                    if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
+                        meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
                     else:
-                        logger.error(f'meas_term.ConductingEquipment is None')
+                        logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                else:
+                    logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
                 logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
@@ -654,7 +652,7 @@ class PeakShavingController(object):
             for i in range(len(pu_vals)):
                 if abs(1.0-pu_vals[i]) < diff:
                     diff = abs(1.0-pu_vals[i])
-                    self.pnv_measurements_pu[mrid] = pu_vals[1]
+                    self.pnv_measurements_pu[mrid] = pu_vals[i]
             pnv_meta_data['pu V'] = self.pnv_measurements_pu[mrid]
             logger.info(f'Voltage meta data for {meas_obj.Terminal.ConnectivityNode.name}:{json.dumps(pnv_meta_data,indent=4)}')
 

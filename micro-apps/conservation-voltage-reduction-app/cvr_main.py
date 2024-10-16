@@ -259,7 +259,6 @@ class ConservationVoltageReductionController(object):
         self.next_control_time = 0
         self.voltage_violation_time = -1
         self.isValid = True
-        self.measurementTime = -1
 
     def init_output_file(self):
         for child in self.model_results_path.iterdir():
@@ -368,37 +367,35 @@ class ConservationVoltageReductionController(object):
                         logger.info(f"Pos Measurement: {json.dumps(pos_measurement_debug_data)}")
         self.calculate_per_unit_voltage()
         self.save_voltage_data(timestamp)
-        if (self.measurementTime < 0):
-            self.measurementTime = int(timestamp)
-            self.update_opendss_with_measurements()
-            if int(timestamp) > self.next_control_time:
-                self.cvr_control()
-                self.next_control_time = int(timestamp) + self.period
-                self.voltage_violation_time = -1
-            else:
-                total_violation_time = 0
-                voltage_violation_phases = ''
-                for mrid, val in self.pnv_measurements_pu.items():
-                    if val is not None:
-                        if val < self.low_volt_lim:
-                            if self.voltage_violation_time < 0:
-                                self.voltage_violation_time = int(timestamp)
-                                meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
-                                if isinstance(meas, cim.Measurement):
-                                    measPhase = meas.phases
-                                    if measPhase in [
-                                            cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
-                                            cim.PhaseCode.s2, cim.PhaseCode.s2N
-                                    ]:
-                                        measPhase = findPrimaryPhase(meas.PowerSystemResource)
-                                    if measPhase.value not in voltage_violation_phases:
-                                        voltage_violation_phases += measPhase.value
-                            else:
-                                total_violation_time = int(timestamp) - self.voltage_violation_time
-                            break
-                if total_violation_time > ConservationVoltageReductionController.max_violation_time:
-                    self.cvr_control(voltage_violation_phases)
-                    self.voltage_violation_time = int(timestamp)
+        self.update_opendss_with_measurements()
+        if int(timestamp) >= self.next_control_time:
+            self.cvr_control()
+            self.next_control_time = int(timestamp) + self.period
+            self.voltage_violation_time = -1
+        else:
+            total_violation_time = 0
+            voltage_violation_phases = ''
+            for mrid, val in self.pnv_measurements_pu.items():
+                if val is not None:
+                    if val < self.low_volt_lim:
+                        if self.voltage_violation_time < 0:
+                            self.voltage_violation_time = int(timestamp)
+                            meas = self.pnv_measurements.get(mrid, {}).get('measurement_object', None)
+                            if isinstance(meas, cim.Measurement):
+                                measPhase = meas.phases
+                                if measPhase in [
+                                        cim.PhaseCode.s1, cim.PhaseCode.s12, cim.PhaseCode.s1N, cim.PhaseCode.s12N,
+                                        cim.PhaseCode.s2, cim.PhaseCode.s2N
+                                ]:
+                                    measPhase = findPrimaryPhase(meas.PowerSystemResource)
+                                if measPhase.value not in voltage_violation_phases:
+                                    voltage_violation_phases += measPhase.value
+                        else:
+                            total_violation_time = int(timestamp) - self.voltage_violation_time
+                        break
+            if total_violation_time > ConservationVoltageReductionController.max_violation_time:
+                self.cvr_control(voltage_violation_phases)
+                self.voltage_violation_time = int(timestamp)
         if isinstance(sim, Simulation):
             self.simulation.resume()
 
@@ -439,29 +436,27 @@ class ConservationVoltageReductionController(object):
                                'It will be ignored in cvr control.')
                 logger.error(f'The measurement dictionary for mrid {mrid} is missing from the CIM database.')
                 continue
-            if isinstance(meas_obj.PowerSystemResource, cim.PowerElectronicsConnection):
-                meas_base = float(meas_obj.PowerSystemResource.ratedU)
-            else:
-                meas_term = meas_obj.Terminal
-                if isinstance(meas_term, cim.Terminal):
-                    if meas_term.TransformerEnd:
-                        if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
-                            meas_base = float(meas_term.TransformerEnd[0].ratedU)
-                        elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
-                            if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
-                                meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
-                            else:
-                                self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
-                                logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
-                                raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
-                                                f'{meas_term.ConnectivityNode.name} is None')
-                    elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
-                        if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
-                            meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
+
+            meas_term = meas_obj.Terminal
+            if isinstance(meas_term, cim.Terminal):
+                if meas_term.TransformerEnd:
+                    if isinstance(meas_term.TransformerEnd[0], cim.PowerTransformerEnd):
+                        meas_base = float(meas_term.TransformerEnd[0].ratedU)
+                    elif isinstance(meas_term.TransformerEnd[0], cim.TransformerTankEnd):
+                        if isinstance(meas_term.TranformerEnd[0].BaseVoltage, cim.BaseVoltage):
+                            meas_base = float(meas_term.TransformerEnd[0].BaseVoltage.nominalVoltage)
                         else:
-                            logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                            self.log.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                            logger.error('meas_term.TransformerEnd[0].BaseVoltage is None')
+                            raise RuntimeError('PNV measurement BaseVoltage for ConnectivityNode '
+                                            f'{meas_term.ConnectivityNode.name} is None')
+                elif isinstance(meas_term.ConductingEquipment, cim.ConductingEquipment):
+                    if isinstance(meas_term.ConductingEquipment.BaseVoltage, cim.BaseVoltage):
+                        meas_base = float(meas_term.ConductingEquipment.BaseVoltage.nominalVoltage)
                     else:
-                        logger.error(f'meas_term.ConductingEquipment is None')
+                        logger.error(f'meas_term.ConductingEquipment.BaseVoltage is None')
+                else:
+                    logger.error(f'meas_term.ConductingEquipment is None')
             if (meas_base is None) or (meas_base < 1e-10):
                 self.log.error(f'Unable to get the nominal voltage for measurement with mrid {mrid}.')
                 logger.error('Voltage Measurement has no accociated nominal Voltage.\nMeasurement: '
@@ -473,7 +468,7 @@ class ConservationVoltageReductionController(object):
             for i in range(len(pu_vals)):
                 if abs(1.0-pu_vals[i]) < diff:
                     diff = abs(1.0-pu_vals[i])
-                    self.pnv_measurements_pu[mrid] = pu_vals[1]
+                    self.pnv_measurements_pu[mrid] = pu_vals[i]
             pnv_meta_data['pu V'] = self.pnv_measurements_pu[mrid]
             logger.info(f'Voltage meta data for {meas_obj.Terminal.ConnectivityNode.name}:{json.dumps(pnv_meta_data,indent=4)}')
 

@@ -506,48 +506,48 @@ power_path = Path("output/ieee123_apps/feeder_head.csv")
 no_app_power_path = no_app_path / power_path
 
 # Carbon Power
-# fig = create_power_plot(carbon_path / power_path, no_app_path / power_path)
-# save_pdf(fig, carbon_path / "output/ieee123_apps/feeder_head.pdf")
-# fig.write_image(carbon_path / "output/ieee123_apps/feeder_head.png")
-# fig.write_html(carbon_path / "output/ieee123_apps/feeder_head.html")
-# # Carbon Batteries
-# fig = create_batt_plot(carbon_path / "output/ieee123_apps/simulation_table.csv")
-# fig.write_image(carbon_path / "output/ieee123_apps/batt.png")
-# save_pdf(fig, carbon_path / "output/ieee123_apps/batt.pdf")
-#
-# # CVR Power
-# fig = create_power_plot(cvr_path / power_path, no_app_path / power_path)
-# save_pdf(fig, cvr_path / "output/ieee123_apps/feeder_head.pdf")
-# fig.write_image(cvr_path / "output/ieee123_apps/feeder_head.png")
-# # CVR Q
-# fig = create_var_plot(cvr_path / power_path, no_app_path / power_path)
-# save_pdf(fig, cvr_path / "output/ieee123_apps/reactive_power.pdf")
-# fig.write_image(cvr_path / "output/ieee123_apps/reactive_power.png")
-# # CVR Voltage
-# fig = create_voltage_plot(cvr_path / "output/ieee123_apps/voltages.csv")
-# fig.write_image(cvr_path / "output/ieee123_apps/voltages.png")
-# save_pdf(fig, cvr_path / "output/ieee123_apps/voltages.pdf")
-#
-# # Peak Shaving Batteries
-# fig = create_batt_plot(peak_path / "output/ieee123_apps/battery_power.csv", units="W")
-# fig.write_image(peak_path / "output/ieee123_apps/batt.png")
-# save_pdf(fig, peak_path / "output/ieee123_apps/batt.pdf")
-# # Peak Shaving Voltage
-# fig = create_voltage_plot(peak_path / "output/ieee123_apps/voltages.csv")
-# fig.write_image(peak_path / "output/ieee123_apps/voltages.png")
-# save_pdf(fig, peak_path / "output/ieee123_apps/voltages.pdf")
-# # Peak Shaving Power
-# fig = create_power_plot(peak_path / power_path, no_app_path / power_path)
-# save_pdf(fig, peak_path / "output/ieee123_apps/feeder_head.pdf")
-# fig.write_image(peak_path / "output/ieee123_apps/feeder_head.png")
-# # Peak Shaving loads - batteries
-# loads = pd.read_csv(peak_path / "output/ieee123_apps/loads_no_batt.csv")
-# loads = loads.melt(id_vars=["time"], value_vars=["a", "b", "c"], var_name="phase", value_name="p")
-# loads.phase = loads.phase.str.upper()
-# loads = loads.sort_values(by=["time", "phase"], ignore_index=True)
-# fig = create_power_plot(loads, no_app_path / power_path)
-# # save_pdf(fig, peak_path / "output/ieee123_apps/loads_no_batt.pdf")
-# fig.write_image(peak_path / "output/ieee123_apps/loads_no_batt.png")
+fig = create_power_plot(carbon_path / power_path, no_app_path / power_path)
+save_pdf(fig, carbon_path / "output/ieee123_apps/feeder_head.pdf")
+fig.write_image(carbon_path / "output/ieee123_apps/feeder_head.png")
+fig.write_html(carbon_path / "output/ieee123_apps/feeder_head.html")
+# Carbon Batteries
+fig = create_batt_plot(carbon_path / "output/ieee123_apps/simulation_table.csv")
+fig.write_image(carbon_path / "output/ieee123_apps/batt.png")
+save_pdf(fig, carbon_path / "output/ieee123_apps/batt.pdf")
+
+# CVR Power
+fig = create_power_plot(cvr_path / power_path, no_app_path / power_path)
+save_pdf(fig, cvr_path / "output/ieee123_apps/feeder_head.pdf")
+fig.write_image(cvr_path / "output/ieee123_apps/feeder_head.png")
+# CVR Q
+fig = create_var_plot(cvr_path / power_path, no_app_path / power_path)
+save_pdf(fig, cvr_path / "output/ieee123_apps/reactive_power.pdf")
+fig.write_image(cvr_path / "output/ieee123_apps/reactive_power.png")
+# CVR Voltage
+fig = create_voltage_plot(cvr_path / "output/ieee123_apps/voltages.csv")
+fig.write_image(cvr_path / "output/ieee123_apps/voltages.png")
+save_pdf(fig, cvr_path / "output/ieee123_apps/voltages.pdf")
+
+# Peak Shaving Batteries
+fig = create_batt_plot(peak_path / "output/ieee123_apps/battery_power.csv", units="W")
+fig.write_image(peak_path / "output/ieee123_apps/batt.png")
+save_pdf(fig, peak_path / "output/ieee123_apps/batt.pdf")
+# Peak Shaving Voltage
+fig = create_voltage_plot(peak_path / "output/ieee123_apps/voltages.csv")
+fig.write_image(peak_path / "output/ieee123_apps/voltages.png")
+save_pdf(fig, peak_path / "output/ieee123_apps/voltages.pdf")
+# Peak Shaving Power
+fig = create_power_plot(peak_path / power_path, no_app_path / power_path)
+save_pdf(fig, peak_path / "output/ieee123_apps/feeder_head.pdf")
+fig.write_image(peak_path / "output/ieee123_apps/feeder_head.png")
+# Peak Shaving loads - batteries
+loads = pd.read_csv(peak_path / "output/ieee123_apps/loads_no_batt.csv")
+loads = loads.melt(id_vars=["time"], value_vars=["a", "b", "c"], var_name="phase", value_name="p")
+loads.phase = loads.phase.str.upper()
+loads = loads.sort_values(by=["time", "phase"], ignore_index=True)
+fig = create_power_plot(loads, no_app_path / power_path)
+# save_pdf(fig, peak_path / "output/ieee123_apps/loads_no_batt.pdf")
+fig.write_image(peak_path / "output/ieee123_apps/loads_no_batt.png")
 
 fig = create_power_comparison_plot(
     base_path=no_app_path / power_path,

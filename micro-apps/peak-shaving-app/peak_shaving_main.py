@@ -230,11 +230,11 @@ def createSimulation(gad_obj: GridAPPSD, model_info: Dict[str, Any]) -> Simulati
     start_time = int(datetime.utcnow().replace(microsecond=0).timestamp())
     start = datetime(2023, 1, 1, 0, tzinfo=timezone.utc)
     epoch = datetime.timestamp(start)
-    duration = timedelta(hours=24).total_seconds()
+    duration = timedelta(minutes=1).total_seconds()
     sim_args = SimulationArgs(start_time=f'{epoch}',
                               duration=f'{duration}',
                               simulation_name=sim_name,
-                              run_realtime=False,
+                              run_realtime=True,
                               pause_after_measurements=False)
     sim_config = SimulationConfig(power_system_config=psc, simulation_config=sim_args)
     sim_obj = Simulation(gapps=gad_obj, run_config=sim_config)
